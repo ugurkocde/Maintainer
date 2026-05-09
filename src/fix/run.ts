@@ -89,8 +89,7 @@ Your job: implement a minimal correct fix and verify it with the test command ab
   const changed = await ws.listChangedFiles();
   const runMeta: RunMetadata = {
     model: config.fix.model,
-    inputTokens: budget.used().input,
-    outputTokens: budget.used().output,
+    usage: budget.used(),
     runtimeMs: Date.now() - start,
   };
   const footer = renderRunFooter(runMeta);

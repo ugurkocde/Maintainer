@@ -1,23 +1,45 @@
 import { describe, it, expect } from 'vitest';
-import { estimateCost, formatCost } from '../src/util/pricing.js';
+import { estimateCost, formatCost, totalInputTokens } from '../src/util/pricing.js';
 
 describe('estimateCost', () => {
   it('computes Sonnet cost', () => {
     // 100k input @ $3/M = $0.30; 10k output @ $15/M = $0.15; total $0.45
-    expect(estimateCost('claude-sonnet-4-6', 100_000, 10_000)).toBeCloseTo(0.45, 2);
+    expect(estimateCost('claude-sonnet-4-6', { inputTokens: 100_000, outputTokens: 10_000 })).toBeCloseTo(0.45, 2);
   });
 
   it('computes Opus cost', () => {
     // 100k input @ $15/M = $1.50; 10k output @ $75/M = $0.75; total $2.25
-    expect(estimateCost('claude-opus-4-7', 100_000, 10_000)).toBeCloseTo(2.25, 2);
+    expect(estimateCost('claude-opus-4-7', { inputTokens: 100_000, outputTokens: 10_000 })).toBeCloseTo(2.25, 2);
   });
 
   it('returns null for unknown model', () => {
-    expect(estimateCost('claude-banana-9-9', 100_000, 10_000)).toBeNull();
+    expect(estimateCost('claude-banana-9-9', { inputTokens: 100_000, outputTokens: 10_000 })).toBeNull();
   });
 
   it('matches dated model variants', () => {
-    expect(estimateCost('claude-haiku-4-5-20251001', 1_000_000, 100_000)).toBeCloseTo(1.5, 2);
+    expect(estimateCost('claude-haiku-4-5-20251001', { inputTokens: 1_000_000, outputTokens: 100_000 })).toBeCloseTo(1.5, 2);
+  });
+
+  it('weights cache_creation at 1.25x input', () => {
+    // Sonnet: 100k cache_creation @ $3/M * 1.25 = $0.375
+    const cost = estimateCost('claude-sonnet-4-6', {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 100_000,
+      cacheReadTokens: 0,
+    });
+    expect(cost).toBeCloseTo(0.375, 3);
+  });
+
+  it('weights cache_read at 0.1x input', () => {
+    // Sonnet: 1M cache_read @ $3/M * 0.1 = $0.30
+    const cost = estimateCost('claude-sonnet-4-6', {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(0.3, 2);
   });
 });
 
@@ -32,5 +54,22 @@ describe('formatCost', () => {
 
   it('formats dollar amounts with two decimals', () => {
     expect(formatCost(2.345)).toBe('$2.35');
+  });
+});
+
+describe('totalInputTokens', () => {
+  it('sums plain input + cache fields', () => {
+    expect(
+      totalInputTokens({
+        inputTokens: 1000,
+        outputTokens: 0,
+        cacheCreationTokens: 500,
+        cacheReadTokens: 2000,
+      }),
+    ).toBe(3500);
+  });
+
+  it('handles missing cache fields', () => {
+    expect(totalInputTokens({ inputTokens: 1000, outputTokens: 0 })).toBe(1000);
   });
 });

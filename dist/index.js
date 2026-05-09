@@ -39821,7 +39821,12 @@ async function runAgent(opts) {
         }
         inputTokens += response.usage.input_tokens;
         outputTokens += response.usage.output_tokens;
-        opts.budget.record(response.usage.input_tokens, response.usage.output_tokens);
+        opts.budget.record({
+            inputTokens: response.usage.input_tokens,
+            outputTokens: response.usage.output_tokens,
+            cacheCreationTokens: response.usage.cache_creation_input_tokens ?? 0,
+            cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
+        });
         stopReason = response.stop_reason ?? 'unknown';
         finalText = extractText(response.content);
         messages.push({ role: 'assistant', content: response.content });
@@ -39881,7 +39886,12 @@ async function callStructured(opts) {
         tools: [tool],
         tool_choice: { type: 'tool', name: opts.schemaName },
     });
-    opts.budget.record(response.usage.input_tokens, response.usage.output_tokens);
+    opts.budget.record({
+        inputTokens: response.usage.input_tokens,
+        outputTokens: response.usage.output_tokens,
+        cacheCreationTokens: response.usage.cache_creation_input_tokens ?? 0,
+        cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
+    });
     const toolUse = response.content.find((b) => b.type === 'tool_use');
     if (!toolUse) {
         throw new Error(`Structured call returned no tool_use block. Stop reason: ${response.stop_reason}`);
@@ -40190,8 +40200,7 @@ Carry out the instruction using your tools. Conclude with a one-line summary in 
     const summary = result.finalText.trim() || 'Done.';
     const footer = (0, sticky_js_1.renderRunFooter)({
         model: config.commands.intent_model,
-        inputTokens: budget.used().input,
-        outputTokens: budget.used().output,
+        usage: budget.used(),
         runtimeMs: Date.now() - start,
     });
     await (0, issues_js_1.upsertStickyComment)(client, issueNumber, 'intent', `### Maintainer\n\n${summary}${footer}`);
@@ -40854,8 +40863,7 @@ Your job: implement a minimal correct fix and verify it with the test command ab
     const changed = await ws.listChangedFiles();
     const runMeta = {
         model: config.fix.model,
-        inputTokens: budget.used().input,
-        outputTokens: budget.used().output,
+        usage: budget.used(),
         runtimeMs: Date.now() - start,
     };
     const footer = (0, sticky_js_1.renderRunFooter)(runMeta);
@@ -41978,8 +41986,7 @@ ${candidateBlock}`;
     const body = renderTriageBody(verdict, candidates);
     const footer = (0, sticky_js_1.renderRunFooter)({
         model: config.triage.model,
-        inputTokens: budget.used().input,
-        outputTokens: budget.used().output,
+        usage: budget.used(),
         runtimeMs: Date.now() - start,
     });
     await (0, issues_js_1.upsertStickyComment)(client, event.issue_number, 'triage', body + footer);
@@ -42053,25 +42060,41 @@ class TokenBudget {
     maxOutput;
     inputUsed = 0;
     outputUsed = 0;
+    cacheCreation = 0;
+    cacheRead = 0;
     constructor(maxInput, maxOutput) {
         this.maxInput = maxInput;
         this.maxOutput = maxOutput;
     }
     record(input, output) {
-        this.inputUsed += input;
-        this.outputUsed += output;
+        if (typeof input === 'number') {
+            this.inputUsed += input;
+            this.outputUsed += output ?? 0;
+            return;
+        }
+        this.inputUsed += input.inputTokens;
+        this.outputUsed += input.outputTokens;
+        this.cacheCreation += input.cacheCreationTokens ?? 0;
+        this.cacheRead += input.cacheReadTokens ?? 0;
     }
     exhausted() {
-        return this.inputUsed >= this.maxInput || this.outputUsed >= this.maxOutput;
+        const inputTotal = this.inputUsed + this.cacheCreation + this.cacheRead;
+        return inputTotal >= this.maxInput || this.outputUsed >= this.maxOutput;
     }
     remaining() {
+        const inputTotal = this.inputUsed + this.cacheCreation + this.cacheRead;
         return {
-            input: Math.max(0, this.maxInput - this.inputUsed),
+            input: Math.max(0, this.maxInput - inputTotal),
             output: Math.max(0, this.maxOutput - this.outputUsed),
         };
     }
     used() {
-        return { input: this.inputUsed, output: this.outputUsed };
+        return {
+            inputTokens: this.inputUsed,
+            outputTokens: this.outputUsed,
+            cacheCreationTokens: this.cacheCreation,
+            cacheReadTokens: this.cacheRead,
+        };
     }
 }
 exports.TokenBudget = TokenBudget;
@@ -42198,18 +42221,28 @@ exports.log = {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.estimateCost = estimateCost;
 exports.formatCost = formatCost;
+exports.totalInputTokens = totalInputTokens;
 const PRICES = {
     'claude-opus-4-7': { inputPerM: 15, outputPerM: 75 },
     'claude-sonnet-4-6': { inputPerM: 3, outputPerM: 15 },
     'claude-haiku-4-5': { inputPerM: 1, outputPerM: 5 },
     'claude-haiku-4-5-20251001': { inputPerM: 1, outputPerM: 5 },
 };
-function estimateCost(model, inputTokens, outputTokens) {
+const CACHE_WRITE_MULTIPLIER = 1.25;
+const CACHE_READ_MULTIPLIER = 0.1;
+function estimateCost(model, usage) {
     const key = Object.keys(PRICES).find((k) => model === k || model.startsWith(`${k}-`));
     if (!key)
         return null;
     const p = PRICES[key];
-    return (inputTokens * p.inputPerM + outputTokens * p.outputPerM) / 1_000_000;
+    const cacheCreation = usage.cacheCreationTokens ?? 0;
+    const cacheRead = usage.cacheReadTokens ?? 0;
+    const inputCost = (usage.inputTokens * p.inputPerM +
+        cacheCreation * p.inputPerM * CACHE_WRITE_MULTIPLIER +
+        cacheRead * p.inputPerM * CACHE_READ_MULTIPLIER) /
+        1_000_000;
+    const outputCost = (usage.outputTokens * p.outputPerM) / 1_000_000;
+    return inputCost + outputCost;
 }
 function formatCost(usd) {
     if (usd < 0.01)
@@ -42217,6 +42250,9 @@ function formatCost(usd) {
     if (usd < 1)
         return `$${usd.toFixed(3)}`;
     return `$${usd.toFixed(2)}`;
+}
+function totalInputTokens(usage) {
+    return usage.inputTokens + (usage.cacheCreationTokens ?? 0) + (usage.cacheReadTokens ?? 0);
 }
 
 
@@ -42246,26 +42282,48 @@ function withStickyMarker(flow, body) {
     return `${stickyMarker(flow)}\n${body}`;
 }
 function renderRunFooter(opts) {
-    const tokens = `${formatTokens(opts.inputTokens)} in / ${formatTokens(opts.outputTokens)} out`;
+    const tokens = formatTokenSummary(opts.usage);
     const runtime = `${(opts.runtimeMs / 1000).toFixed(1)}s`;
-    const cost = (0, pricing_js_1.estimateCost)(opts.model, opts.inputTokens, opts.outputTokens);
+    const cost = (0, pricing_js_1.estimateCost)(opts.model, opts.usage);
     const costStr = cost !== null ? ` | cost: ~${(0, pricing_js_1.formatCost)(cost)}` : '';
     const ts = new Date().toISOString().replace('T', ' ').replace(/\..+/, ' UTC');
     return `\n\n---\nRun: ${ts} | model: ${opts.model} | tokens: ${tokens}${costStr} | runtime: ${runtime}`;
 }
 function renderRunDetailsBlock(opts) {
-    const cost = (0, pricing_js_1.estimateCost)(opts.model, opts.inputTokens, opts.outputTokens);
-    const costLine = cost !== null ? `- Estimated cost: ~${(0, pricing_js_1.formatCost)(cost)}` : '- Estimated cost: unknown (pricing not in table)';
+    const cost = (0, pricing_js_1.estimateCost)(opts.model, opts.usage);
+    const costLine = cost !== null
+        ? `- Estimated cost: ~${(0, pricing_js_1.formatCost)(cost)}`
+        : '- Estimated cost: unknown (pricing not in table)';
+    const cacheCreation = opts.usage.cacheCreationTokens ?? 0;
+    const cacheRead = opts.usage.cacheReadTokens ?? 0;
+    const cacheLines = [];
+    if (cacheCreation > 0)
+        cacheLines.push(`- Cache write tokens: ${cacheCreation.toLocaleString()} (billed at 1.25x)`);
+    if (cacheRead > 0)
+        cacheLines.push(`- Cache read tokens: ${cacheRead.toLocaleString()} (billed at 0.1x)`);
     return [
         '## Run details',
         '',
         `- Model: \`${opts.model}\``,
-        `- Input tokens: ${opts.inputTokens.toLocaleString()}`,
-        `- Output tokens: ${opts.outputTokens.toLocaleString()}`,
+        `- Input tokens: ${opts.usage.inputTokens.toLocaleString()}`,
+        `- Output tokens: ${opts.usage.outputTokens.toLocaleString()}`,
+        ...cacheLines,
         costLine,
         `- Runtime: ${(opts.runtimeMs / 1000).toFixed(1)}s`,
         `- Generated: ${new Date().toISOString()}`,
     ].join('\n');
+}
+function formatTokenSummary(usage) {
+    const parts = [];
+    parts.push(`${formatTokens(usage.inputTokens)} in`);
+    if (usage.cacheCreationTokens && usage.cacheCreationTokens > 0) {
+        parts.push(`${formatTokens(usage.cacheCreationTokens)} cache write`);
+    }
+    if (usage.cacheReadTokens && usage.cacheReadTokens > 0) {
+        parts.push(`${formatTokens(usage.cacheReadTokens)} cache read`);
+    }
+    parts.push(`${formatTokens(usage.outputTokens)} out`);
+    return parts.join(' / ');
 }
 function formatTokens(n) {
     if (n < 1000)

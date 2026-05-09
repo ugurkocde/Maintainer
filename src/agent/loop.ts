@@ -73,7 +73,12 @@ export async function runAgent(opts: AgentRunOpts): Promise<AgentRunResult> {
 
     inputTokens += response.usage.input_tokens;
     outputTokens += response.usage.output_tokens;
-    opts.budget.record(response.usage.input_tokens, response.usage.output_tokens);
+    opts.budget.record({
+      inputTokens: response.usage.input_tokens,
+      outputTokens: response.usage.output_tokens,
+      cacheCreationTokens: response.usage.cache_creation_input_tokens ?? 0,
+      cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
+    });
     stopReason = response.stop_reason ?? 'unknown';
 
     finalText = extractText(response.content);
@@ -146,7 +151,12 @@ export async function callStructured<T>(opts: {
     tools: [tool],
     tool_choice: { type: 'tool', name: opts.schemaName },
   });
-  opts.budget.record(response.usage.input_tokens, response.usage.output_tokens);
+  opts.budget.record({
+    inputTokens: response.usage.input_tokens,
+    outputTokens: response.usage.output_tokens,
+    cacheCreationTokens: response.usage.cache_creation_input_tokens ?? 0,
+    cacheReadTokens: response.usage.cache_read_input_tokens ?? 0,
+  });
 
   const toolUse = response.content.find((b): b is ToolUseBlock => b.type === 'tool_use');
   if (!toolUse) {

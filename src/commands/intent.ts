@@ -188,8 +188,7 @@ Carry out the instruction using your tools. Conclude with a one-line summary in 
   const summary = result.finalText.trim() || 'Done.';
   const footer = renderRunFooter({
     model: config.commands.intent_model,
-    inputTokens: budget.used().input,
-    outputTokens: budget.used().output,
+    usage: budget.used(),
     runtimeMs: Date.now() - start,
   });
   await upsertStickyComment(

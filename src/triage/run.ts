@@ -131,8 +131,7 @@ ${candidateBlock}`;
   const body = renderTriageBody(verdict, candidates);
   const footer = renderRunFooter({
     model: config.triage.model,
-    inputTokens: budget.used().input,
-    outputTokens: budget.used().output,
+    usage: budget.used(),
     runtimeMs: Date.now() - start,
   });
   await upsertStickyComment(client, event.issue_number, 'triage', body + footer);
