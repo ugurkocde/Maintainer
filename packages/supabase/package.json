@@ -1,0 +1,16 @@
+{
+  "name": "@maintainer/supabase",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Generated Supabase types and typed client factories for the Maintainer orchestrator and dashboard.",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./types": "./types.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1"
+  }
+}
