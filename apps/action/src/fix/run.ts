@@ -24,27 +24,33 @@ import { detectProject } from './detect.js';
 import { repoOwner, repoName } from '../util/events.js';
 import { loadProjectContext } from '../context/load.js';
 import { CONTEXT_FILE_PATH } from '../context/path.js';
+import { recordAgentStep, recordPullRequest, attachPrToRun } from '../db/ops.js';
+import type { RunState } from '../index.js';
 import { log } from '../util/log.js';
+
+export type FixOutcome = 'fix_proposed' | 'fix_failed' | 'no_action';
 
 export async function runFix(args: {
   client: Octokit;
   apiKey: string;
   config: Config;
   issueNumber: number;
-}): Promise<void> {
-  const { client, apiKey, config, issueNumber } = args;
+  runState?: RunState;
+}): Promise<FixOutcome | undefined> {
+  const { client, apiKey, config, issueNumber, runState } = args;
 
   if (!config.fix.enabled) {
     log.info('Fix flow disabled in config.');
-    return;
+    return 'no_action';
   }
 
   const start = Date.now();
+  const startedAt = new Date(start);
   const issue = await getIssue(client, issueNumber);
 
   if (issue.is_pull_request) {
     log.info('Skipping fix flow on a pull request.');
-    return;
+    return 'no_action';
   }
 
   const workspaceRoot = process.env.GITHUB_WORKSPACE ?? (await fs.mkdtemp(join(tmpdir(), 'maintainer-')));
@@ -55,7 +61,7 @@ export async function runFix(args: {
       issueNumber,
       'Maintainer was unable to check out the repository for a fix attempt.',
     );
-    return;
+    return 'no_action';
   }
 
   const ws = new Workspace(workspaceRoot);
@@ -65,6 +71,30 @@ export async function runFix(args: {
   const baseBranch = await getDefaultBranch(client);
 
   const budget = new TokenBudget(config.fix.max_input_tokens, config.fix.max_output_tokens);
+
+  const recordStep = async (
+    status: 'succeeded' | 'failed' | 'rate_limited' | 'budget_exhausted',
+    outputSummary: string,
+    metadata: Record<string, unknown> = {},
+    extra: { stopReason?: string; stepsCount?: number; toolCalls?: number } = {},
+  ): Promise<void> => {
+    if (!runState?.runId) return;
+    await recordAgentStep({
+      runId: runState.runId,
+      position: 1,
+      agent: 'fixer',
+      model: config.fix.model,
+      status,
+      inputSummary: `Issue #${issue.number}: ${issue.title.slice(0, 120)}`,
+      outputSummary,
+      usage: budget.used(),
+      toolCalls: extra.toolCalls,
+      steps: extra.stepsCount,
+      stopReason: extra.stopReason,
+      metadata,
+      startedAt,
+    });
+  };
 
   const projectContext = await loadProjectContext(workspaceRoot);
   const contextSection = projectContext
@@ -143,7 +173,13 @@ Could not produce a fix.
 ${result.finalText || 'No final summary available.'}${footer}`;
     await upsertStickyComment(client, issueNumber, 'fix', body);
     await addLabels(client, issueNumber, [`${config.labels.prefix}fix-failed`]);
-    return;
+    await recordStep(
+      result.stopReason === 'rate_limited' ? 'rate_limited' : 'failed',
+      'no files changed',
+      { reason: 'no_files_changed' },
+      { stopReason: result.stopReason, stepsCount: result.steps, toolCalls: result.toolCalls },
+    );
+    return 'fix_failed';
   }
 
   const testOutput = testCommand ? await runTests(ws, testCommand, config.fix.timeout_minutes) : null;
@@ -172,7 +208,13 @@ ${(testOutput.stdout + '\n' + testOutput.stderr).slice(0, 8000)}
     await upsertStickyComment(client, issueNumber, 'fix', body);
     await addLabels(client, issueNumber, [`${config.labels.prefix}fix-failed`]);
     await ws.run('git', ['restore', '--staged', '--worktree', '.']);
-    return;
+    await recordStep(
+      'failed',
+      `tests failed: exit ${testOutput.code}`,
+      { files_changed: changed, test_command: testCommand, test_exit: testOutput.code },
+      { stopReason: result.stopReason, stepsCount: result.steps, toolCalls: result.toolCalls },
+    );
+    return 'fix_failed';
   }
 
   const pushed = await commitAndPush(ws, branchName, baseBranch, issueNumber);
@@ -183,7 +225,13 @@ ${(testOutput.stdout + '\n' + testOutput.stderr).slice(0, 8000)}
       'fix',
       `### Maintainer fix attempt\n\nMade changes and tests passed, but pushing the fix branch failed. Check the Action logs.${footer}`,
     );
-    return;
+    await recordStep(
+      'failed',
+      'push failed',
+      { files_changed: changed, branch: branchName },
+      { stopReason: result.stopReason, stepsCount: result.steps, toolCalls: result.toolCalls },
+    );
+    return 'fix_failed';
   }
 
   const prBody = renderPrBody(issue.number, result.finalText, changed, testCommand, testOutput?.stdout ?? '', runMeta);
@@ -227,7 +275,13 @@ The fix is on branch [\`${branchName}\`](${branchUrl}). Review the diff: [${base
 **Files changed:** ${changed.join(', ')}${footer}`;
       await upsertStickyComment(client, issueNumber, 'fix', fallback);
       await addLabels(client, issueNumber, [`${config.labels.prefix}fix-failed`]);
-      return;
+      await recordStep(
+        'failed',
+        `pr_create_failed: ${msg.slice(0, 160)}`,
+        { files_changed: changed, branch: branchName, error: msg },
+        { stopReason: result.stopReason, stepsCount: result.steps, toolCalls: result.toolCalls },
+      );
+      return 'fix_failed';
     }
   }
 
@@ -247,6 +301,36 @@ Draft fix proposed in [#${pr.number}](${pr.html_url}). Tests ${testsPassed === f
   await upsertStickyComment(client, issueNumber, 'fix', sticky);
   await addLabels(client, issueNumber, [`${config.labels.prefix}fix-proposed`]);
   await removeLabel(client, issueNumber, `${config.labels.prefix}fix-failed`);
+
+  if (runState?.repoId) {
+    const prRowId = await recordPullRequest({
+      repoId: runState.repoId,
+      issueId: runState.issueId ?? null,
+      runId: runState.runId,
+      prNumber: pr.number,
+      title: truncateTitle(`Fix: ${issue.title}`, 200),
+      branch: branchName,
+      baseBranch,
+      filesChanged: changed,
+      url: pr.html_url,
+    });
+    if (prRowId) await attachPrToRun(runState.runId, prRowId);
+  }
+
+  await recordStep(
+    'succeeded',
+    `draft PR #${pr.number} (${changed.length} files)`,
+    {
+      pr_number: pr.number,
+      pr_url: pr.html_url,
+      files_changed: changed,
+      branch: branchName,
+      tests_passed: testsPassed,
+    },
+    { stopReason: result.stopReason, stepsCount: result.steps, toolCalls: result.toolCalls },
+  );
+
+  return 'fix_proposed';
 }
 
 async function ensureCheckout(root: string, _client: Octokit): Promise<boolean> {

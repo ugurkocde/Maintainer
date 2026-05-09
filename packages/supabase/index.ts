@@ -22,7 +22,7 @@ function readEnv(keys: readonly string[]): string | undefined {
   return undefined;
 }
 
-function require(value: string | undefined, label: string): string {
+function requireValue(value: string | undefined, label: string): string {
   if (!value) {
     throw new Error(
       `Missing ${label}. Set one of the standard env vars (see .env.example) before instantiating the Supabase client.`,
@@ -38,8 +38,8 @@ function require(value: string | undefined, label: string): string {
  * Never instantiate this in the browser.
  */
 export function createServerClient(opts?: { url?: string; secretKey?: string }): Client {
-  const url = require(opts?.url ?? readEnv(FALLBACK_URL_KEYS), 'SUPABASE_URL');
-  const secretKey = require(
+  const url = requireValue(opts?.url ?? readEnv(FALLBACK_URL_KEYS), 'SUPABASE_URL');
+  const secretKey = requireValue(
     opts?.secretKey ?? readEnv(FALLBACK_SECRET_KEYS),
     'SUPABASE_SECRET_KEY',
   );
@@ -53,8 +53,8 @@ export function createServerClient(opts?: { url?: string; secretKey?: string }):
  * Used by the dashboard once authenticated users sign in with GitHub.
  */
 export function createBrowserClient(opts?: { url?: string; publishableKey?: string }): Client {
-  const url = require(opts?.url ?? readEnv(FALLBACK_URL_KEYS), 'SUPABASE_URL');
-  const publishableKey = require(
+  const url = requireValue(opts?.url ?? readEnv(FALLBACK_URL_KEYS), 'SUPABASE_URL');
+  const publishableKey = requireValue(
     opts?.publishableKey ?? readEnv(FALLBACK_PUBLISHABLE_KEYS),
     'SUPABASE_PUBLISHABLE_KEY',
   );

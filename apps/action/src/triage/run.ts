@@ -1,6 +1,7 @@
 import type { Octokit } from '../github/client.js';
 import type { Config } from '../config/schema.js';
 import type { ParsedIssuesEvent } from '../util/events.js';
+import type { RunState } from '../index.js';
 import { anthropic } from '../agent/client.js';
 import { TRIAGE_PROMPT } from '../agent/prompts.js';
 import { callStructured } from '../agent/loop.js';
@@ -9,6 +10,7 @@ import { renderRunFooter } from '../util/sticky.js';
 import { upsertStickyComment, reactToIssue } from '../github/issues.js';
 import { addLabels } from '../github/labels.js';
 import { findCandidateDuplicates } from '../github/search.js';
+import { recordAgentStep, recordTriageVerdict } from '../db/ops.js';
 import { log } from '../util/log.js';
 
 export type TriageVerdict = {
@@ -71,9 +73,11 @@ export async function runTriage(args: {
   apiKey: string;
   config: Config;
   event: ParsedIssuesEvent;
+  runState?: RunState;
 }): Promise<TriageVerdict | undefined> {
-  const { client, apiKey, config, event } = args;
+  const { client, apiKey, config, event, runState } = args;
   const start = Date.now();
+  const startedAt = new Date(start);
   const budget = new TokenBudget(50_000, 4_000);
 
   await reactToIssue(client, event.issue_number, 'eyes');
@@ -121,6 +125,18 @@ ${candidateBlock}`;
     verdict = result.value;
   } catch (err) {
     log.error(`Triage failed: ${(err as Error).message}`);
+    if (runState?.runId) {
+      await recordAgentStep({
+        runId: runState.runId,
+        position: 0,
+        agent: 'triager',
+        model: config.triage.model,
+        status: 'failed',
+        usage: budget.used(),
+        startedAt,
+        stopReason: 'api_error',
+      });
+    }
     return undefined;
   }
 
@@ -135,6 +151,25 @@ ${candidateBlock}`;
     runtimeMs: Date.now() - start,
   });
   await upsertStickyComment(client, event.issue_number, 'triage', body + footer);
+
+  if (runState?.issueId) {
+    await recordTriageVerdict(runState.issueId, verdict);
+  }
+  if (runState?.runId) {
+    await recordAgentStep({
+      runId: runState.runId,
+      position: 0,
+      agent: 'triager',
+      model: config.triage.model,
+      status: 'succeeded',
+      inputSummary: `Issue #${event.issue_number}: ${event.title.slice(0, 120)}`,
+      outputSummary: `${verdict.type} / ${verdict.severity} / ${verdict.scope} / fixable=${verdict.fixable}`,
+      usage: budget.used(),
+      stopReason: 'end_turn',
+      metadata: { verdict, candidate_count: candidates.length },
+      startedAt,
+    });
+  }
 
   log.info(
     `Triage complete: type=${verdict.type} severity=${verdict.severity} scope=${verdict.scope} fixable=${verdict.fixable}`,

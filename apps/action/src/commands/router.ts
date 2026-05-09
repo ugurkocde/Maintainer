@@ -10,6 +10,8 @@ import { runFix } from '../fix/run.js';
 import { runIntent } from './intent.js';
 import { runExplain } from './explain.js';
 import { runLearn } from '../context/generate.js';
+import { ensureIssue } from '../db/ops.js';
+import type { RunState } from '../index.js';
 import { log } from '../util/log.js';
 
 export async function handleComment(args: {
@@ -17,8 +19,9 @@ export async function handleComment(args: {
   apiKey: string;
   config: Config;
   event: ParsedIssueCommentEvent;
+  runState?: RunState;
 }): Promise<void> {
-  const { client, apiKey, config, event } = args;
+  const { client, apiKey, config, event, runState } = args;
 
   if (isBotAuthor(event.comment_author)) {
     log.debug('Ignoring comment by bot author.');
@@ -38,6 +41,27 @@ export async function handleComment(args: {
 
   await reactToComment(client, event.comment_id, 'eyes');
 
+  // Ensure the issue row exists (and back-fill runState.issueId) so command
+  // flows can attach their agent_steps to the right issue when reading from
+  // the dashboard later.
+  if (runState?.repoId && !runState.issueId) {
+    try {
+      const issueDetail = await getIssue(client, event.issue_number);
+      const issueRow = await ensureIssue({
+        repoId: runState.repoId,
+        number: issueDetail.number,
+        title: issueDetail.title,
+        body: issueDetail.body,
+        authorLogin: issueDetail.author,
+        state: issueDetail.state,
+        labels: issueDetail.labels,
+      });
+      if (issueRow) runState.issueId = issueRow.id;
+    } catch (err) {
+      log.warn(`Could not ensure issue row: ${(err as Error).message}`);
+    }
+  }
+
   try {
     if (parsed.kind === 'slash') {
       await handleSlash(parsed.command, parsed.args, args);
@@ -50,6 +74,7 @@ export async function handleComment(args: {
         commentId: event.comment_id,
         instruction: parsed.instruction,
         invokedBy: event.comment_author,
+        runState,
       });
     }
     await reactToComment(client, event.comment_id, 'rocket');
@@ -68,9 +93,9 @@ export async function handleComment(args: {
 async function handleSlash(
   command: string,
   cmdArgs: string,
-  ctx: { client: Octokit; apiKey: string; config: Config; event: ParsedIssueCommentEvent },
+  ctx: { client: Octokit; apiKey: string; config: Config; event: ParsedIssueCommentEvent; runState?: RunState },
 ): Promise<void> {
-  const { client, apiKey, config, event } = ctx;
+  const { client, apiKey, config, event, runState } = ctx;
 
   switch (command) {
     case 'triage': {
@@ -89,11 +114,12 @@ async function handleSlash(
           state: issue.state,
           is_pull_request: issue.is_pull_request,
         },
+        runState,
       });
       break;
     }
     case 'fix': {
-      await runFix({ client, apiKey, config, issueNumber: event.issue_number });
+      await runFix({ client, apiKey, config, issueNumber: event.issue_number, runState });
       break;
     }
     case 'skip': {
@@ -125,6 +151,7 @@ async function handleSlash(
           state: issue.state,
           is_pull_request: issue.is_pull_request,
         },
+        runState,
       });
       break;
     }

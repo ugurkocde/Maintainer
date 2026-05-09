@@ -18,6 +18,8 @@ import { runFix } from '../fix/run.js';
 import { runTriage } from '../triage/run.js';
 import { loadProjectContext } from '../context/load.js';
 import { CONTEXT_FILE_PATH } from '../context/path.js';
+import { recordAgentStep } from '../db/ops.js';
+import type { RunState } from '../index.js';
 import { log } from '../util/log.js';
 
 export async function runIntent(args: {
@@ -28,9 +30,11 @@ export async function runIntent(args: {
   commentId: number;
   instruction: string;
   invokedBy: string;
+  runState?: RunState;
 }): Promise<void> {
-  const { client, apiKey, config, issueNumber, instruction, invokedBy } = args;
+  const { client, apiKey, config, issueNumber, instruction, invokedBy, runState } = args;
   const start = Date.now();
+  const startedAt = new Date(start);
   const budget = new TokenBudget(80_000, 8_000);
 
   const issue = await getIssue(client, issueNumber);
@@ -150,7 +154,7 @@ Carry out the instruction using your tools. Conclude with a one-line summary in 
         input_schema: { type: 'object', properties: {}, required: [] },
       },
       handler: async () => {
-        await runFix({ client, apiKey, config, issueNumber });
+        await runFix({ client, apiKey, config, issueNumber, runState });
         return 'fix attempt completed (see PR or comment)';
       },
     },
@@ -175,6 +179,7 @@ Carry out the instruction using your tools. Conclude with a one-line summary in 
             state: issue.state,
             is_pull_request: issue.is_pull_request,
           },
+          runState,
         });
         return 'triage completed';
       },
@@ -204,6 +209,23 @@ Carry out the instruction using your tools. Conclude with a one-line summary in 
     'intent',
     `### Maintainer\n\n${summary}${footer}`,
   );
+
+  if (runState?.runId) {
+    await recordAgentStep({
+      runId: runState.runId,
+      position: 0,
+      agent: 'intent',
+      model: config.commands.intent_model,
+      status: 'succeeded',
+      inputSummary: `@${invokedBy}: ${instruction.slice(0, 200)}`,
+      outputSummary: summary.slice(0, 280),
+      usage: budget.used(),
+      toolCalls: result.toolCalls,
+      steps: result.steps,
+      stopReason: result.stopReason,
+      startedAt,
+    });
+  }
 
   log.info(`Intent completed in ${result.steps} steps, ${result.toolCalls} tool calls.`);
 }

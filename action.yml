@@ -21,6 +21,12 @@ inputs:
     description: 'Path to the maintainer config file inside the repo.'
     required: false
     default: '.github/maintainer.yml'
+  supabase-url:
+    description: 'Supabase project URL. When provided alongside supabase-secret-key, the Action records every run and agent step to the orchestrator database.'
+    required: false
+  supabase-secret-key:
+    description: 'Supabase service-role key. Only needed when supabase-url is set. Bypasses RLS to write run telemetry.'
+    required: false
 
 runs:
   using: 'node20'
