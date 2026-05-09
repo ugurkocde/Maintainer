@@ -39752,6 +39752,56 @@ function wrappy (fn, cb) {
 
 /***/ }),
 
+/***/ 6923:
+/***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.systemWithCache = systemWithCache;
+exports.toolsWithCache = toolsWithCache;
+exports.messagesWithRollingCache = messagesWithRollingCache;
+const EPHEMERAL = { type: 'ephemeral' };
+function systemWithCache(systemPrompt) {
+    return [{ type: 'text', text: systemPrompt, cache_control: EPHEMERAL }];
+}
+function toolsWithCache(tools) {
+    if (tools.length === 0)
+        return tools;
+    return tools.map((t, i) => i === tools.length - 1 ? { ...t, cache_control: EPHEMERAL } : t);
+}
+function messagesWithRollingCache(messages) {
+    if (messages.length === 0)
+        return messages;
+    const lastIdx = messages.length - 1;
+    return messages.map((msg, idx) => {
+        if (idx !== lastIdx)
+            return msg;
+        return { ...msg, content: addCacheToLastBlock(msg.content) };
+    });
+}
+function addCacheToLastBlock(content) {
+    if (typeof content === 'string') {
+        return [{ type: 'text', text: content, cache_control: EPHEMERAL }];
+    }
+    if (!Array.isArray(content) || content.length === 0)
+        return content;
+    return content.map((block, i) => {
+        if (i !== content.length - 1)
+            return block;
+        if (block.type === 'text') {
+            return { ...block, cache_control: EPHEMERAL };
+        }
+        if (block.type === 'tool_result') {
+            return { ...block, cache_control: EPHEMERAL };
+        }
+        return block;
+    });
+}
+
+
+/***/ }),
+
 /***/ 1774:
 /***/ (function(__unused_webpack_module, exports, __nccwpck_require__) {
 
@@ -39788,6 +39838,7 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.runAgent = runAgent;
 exports.callStructured = callStructured;
 const log_js_1 = __nccwpck_require__(9906);
+const cache_js_1 = __nccwpck_require__(6923);
 async function runAgent(opts) {
     const tools = opts.tools ?? [];
     const toolMap = new Map(tools.map((t) => [t.spec.name, t.handler]));
@@ -39809,9 +39860,9 @@ async function runAgent(opts) {
             response = await opts.client.messages.create({
                 model: opts.model,
                 max_tokens: maxTokensPerCall,
-                system: opts.systemPrompt,
-                messages,
-                tools: tools.length > 0 ? tools.map((t) => t.spec) : undefined,
+                system: (0, cache_js_1.systemWithCache)(opts.systemPrompt),
+                messages: (0, cache_js_1.messagesWithRollingCache)(messages),
+                tools: tools.length > 0 ? (0, cache_js_1.toolsWithCache)(tools.map((t) => t.spec)) : undefined,
             });
         }
         catch (err) {
@@ -39881,9 +39932,9 @@ async function callStructured(opts) {
     const response = await opts.client.messages.create({
         model: opts.model,
         max_tokens: opts.maxTokens ?? 4096,
-        system: opts.systemPrompt,
+        system: (0, cache_js_1.systemWithCache)(opts.systemPrompt),
         messages: [{ role: 'user', content: opts.userPrompt }],
-        tools: [tool],
+        tools: (0, cache_js_1.toolsWithCache)([tool]),
         tool_choice: { type: 'tool', name: opts.schemaName },
     });
     opts.budget.record({

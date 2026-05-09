@@ -9,6 +9,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages';
 import { TokenBudget } from '../util/budget.js';
 import { log } from '../util/log.js';
+import { systemWithCache, toolsWithCache, messagesWithRollingCache } from './cache.js';
 
 export type ToolHandler = (input: unknown) => Promise<string>;
 
@@ -61,9 +62,9 @@ export async function runAgent(opts: AgentRunOpts): Promise<AgentRunResult> {
       response = await opts.client.messages.create({
         model: opts.model,
         max_tokens: maxTokensPerCall,
-        system: opts.systemPrompt,
-        messages,
-        tools: tools.length > 0 ? tools.map((t) => t.spec) : undefined,
+        system: systemWithCache(opts.systemPrompt),
+        messages: messagesWithRollingCache(messages),
+        tools: tools.length > 0 ? toolsWithCache(tools.map((t) => t.spec)) : undefined,
       });
     } catch (err) {
       log.error(`Anthropic call failed: ${(err as Error).message}`);
@@ -146,9 +147,9 @@ export async function callStructured<T>(opts: {
   const response = await opts.client.messages.create({
     model: opts.model,
     max_tokens: opts.maxTokens ?? 4096,
-    system: opts.systemPrompt,
+    system: systemWithCache(opts.systemPrompt),
     messages: [{ role: 'user', content: opts.userPrompt }],
-    tools: [tool],
+    tools: toolsWithCache([tool]),
     tool_choice: { type: 'tool', name: opts.schemaName },
   });
   opts.budget.record({
