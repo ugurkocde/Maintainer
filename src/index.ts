@@ -4,6 +4,7 @@ import { loadConfig } from './config/load.js';
 import { octokit } from './github/client.js';
 import { ensureLabels } from './github/labels.js';
 import { runTriage } from './triage/run.js';
+import { runFix } from './fix/run.js';
 import { handleComment } from './commands/router.js';
 import { runDashboard } from './dashboard/run.js';
 import { runStale } from './schedule/stale.js';
@@ -65,7 +66,17 @@ async function run(): Promise<void> {
           log.info(`Action "${evt.action}" not handled.`);
           return;
         }
-        await runTriage({ client, apiKey, config, event: evt });
+        const verdict = await runTriage({ client, apiKey, config, event: evt });
+        if (
+          verdict?.fixable &&
+          config.fix.enabled &&
+          config.fix.auto_attempt &&
+          evt.action === 'opened' &&
+          mode !== 'triage-only'
+        ) {
+          log.info(`Triage flagged issue #${evt.issue_number} as fixable; chaining to fix flow.`);
+          await runFix({ client, apiKey, config, issueNumber: evt.issue_number });
+        }
         break;
       }
       case 'issue_comment': {

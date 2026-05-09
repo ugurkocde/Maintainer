@@ -41655,8 +41655,9 @@ const load_js_1 = __nccwpck_require__(1036);
 const client_js_1 = __nccwpck_require__(6584);
 const labels_js_1 = __nccwpck_require__(7448);
 const run_js_1 = __nccwpck_require__(1129);
+const run_js_2 = __nccwpck_require__(7758);
 const router_js_1 = __nccwpck_require__(2346);
-const run_js_2 = __nccwpck_require__(6737);
+const run_js_3 = __nccwpck_require__(6737);
 const stale_js_1 = __nccwpck_require__(1340);
 const digest_js_1 = __nccwpck_require__(6561);
 const events_js_1 = __nccwpck_require__(4343);
@@ -41678,7 +41679,7 @@ async function run() {
         const client = (0, client_js_1.octokit)(token);
         log_js_1.log.info(`Maintainer ${github_1.context.repo.owner}/${github_1.context.repo.repo} | event=${github_1.context.eventName} | mode=${mode}`);
         if (mode === 'dashboard' || (mode === 'auto' && config.dashboard.enabled && github_1.context.eventName === 'schedule')) {
-            await (0, run_js_2.runDashboard)({ client, apiKey, config });
+            await (0, run_js_3.runDashboard)({ client, apiKey, config });
             return;
         }
         await (0, labels_js_1.ensureLabels)(client);
@@ -41705,7 +41706,15 @@ async function run() {
                     log_js_1.log.info(`Action "${evt.action}" not handled.`);
                     return;
                 }
-                await (0, run_js_1.runTriage)({ client, apiKey, config, event: evt });
+                const verdict = await (0, run_js_1.runTriage)({ client, apiKey, config, event: evt });
+                if (verdict?.fixable &&
+                    config.fix.enabled &&
+                    config.fix.auto_attempt &&
+                    evt.action === 'opened' &&
+                    mode !== 'triage-only') {
+                    log_js_1.log.info(`Triage flagged issue #${evt.issue_number} as fixable; chaining to fix flow.`);
+                    await (0, run_js_2.runFix)({ client, apiKey, config, issueNumber: evt.issue_number });
+                }
                 break;
             }
             case 'issue_comment': {
@@ -41723,7 +41732,7 @@ async function run() {
                 if (config.stale.enabled)
                     await (0, stale_js_1.runStale)({ client, config });
                 if (config.dashboard.enabled) {
-                    await (0, run_js_2.runDashboard)({ client, apiKey, config });
+                    await (0, run_js_3.runDashboard)({ client, apiKey, config });
                 }
                 else {
                     await (0, digest_js_1.runDigest)({ client, config });
