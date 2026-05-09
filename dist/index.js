@@ -40992,16 +40992,60 @@ ${(testOutput.stdout + '\n' + testOutput.stderr).slice(0, 8000)}
         return;
     }
     const prBody = renderPrBody(issue.number, result.finalText, changed, testCommand, testOutput?.stdout ?? '', runMeta);
-    const pr = await (0, prs_js_1.createDraftPullRequest)(client, {
-        title: truncateTitle(`Fix: ${issue.title}`, 200),
-        body: prBody,
-        head: branchName,
-        base: baseBranch,
-    });
-    await (0, prs_js_1.addPullRequestLabels)(client, pr.number, [`${config.labels.prefix}needs-human-review`]);
+    const branchUrl = `https://github.com/${(0, events_js_1.repoOwner)()}/${(0, events_js_1.repoName)()}/tree/${branchName}`;
+    const compareUrl = `https://github.com/${(0, events_js_1.repoOwner)()}/${(0, events_js_1.repoName)()}/compare/${baseBranch}...${branchName}`;
+    const existing = await (0, prs_js_1.findOpenPullRequestForBranch)(client, branchName);
+    let pr;
+    if (existing) {
+        log_js_1.log.info(`Reusing existing PR #${existing.number} for branch ${branchName}`);
+        try {
+            await (0, prs_js_1.updatePullRequestBody)(client, existing.number, prBody);
+        }
+        catch (err) {
+            log_js_1.log.warn(`Could not update PR body: ${err.message}`);
+        }
+        pr = existing;
+    }
+    else {
+        try {
+            pr = await (0, prs_js_1.createDraftPullRequest)(client, {
+                title: truncateTitle(`Fix: ${issue.title}`, 200),
+                body: prBody,
+                head: branchName,
+                base: baseBranch,
+            });
+        }
+        catch (err) {
+            const msg = err.message;
+            log_js_1.log.warn(`PR creation failed: ${msg}`);
+            const hint = msg.includes('not permitted to create or approve pull requests')
+                ? '\n\n**Action required:** enable "Allow GitHub Actions to create and approve pull requests" in this repository\'s Actions settings, then re-run by closing and reopening this issue.'
+                : '';
+            const fallback = `### Maintainer fix attempt
+
+Made changes and tests passed, but opening a pull request failed:
+
+\`\`\`
+${msg}
+\`\`\`${hint}
+
+The fix is on branch [\`${branchName}\`](${branchUrl}). Review the diff: [${baseBranch}...${branchName}](${compareUrl}).
+
+**Files changed:** ${changed.join(', ')}${footer}`;
+            await (0, issues_js_1.upsertStickyComment)(client, issueNumber, 'fix', fallback);
+            await (0, labels_js_1.addLabels)(client, issueNumber, [`${config.labels.prefix}fix-failed`]);
+            return;
+        }
+    }
+    try {
+        await (0, prs_js_1.addPullRequestLabels)(client, pr.number, [`${config.labels.prefix}needs-human-review`]);
+    }
+    catch (err) {
+        log_js_1.log.warn(`Could not label PR: ${err.message}`);
+    }
     const sticky = `### Maintainer fix attempt
 
-Draft fix proposed in [#${pr.number}](${pr.html_url}). Tests passed. Awaiting your review.
+Draft fix proposed in [#${pr.number}](${pr.html_url}). Tests ${testsPassed === false ? 'were not run' : 'passed'}. Awaiting your review.
 
 **Files changed:** ${changed.join(', ')}
 
@@ -41611,6 +41655,8 @@ async function removeLabel(client, issueNumber, name) {
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getDefaultBranch = getDefaultBranch;
 exports.createDraftPullRequest = createDraftPullRequest;
+exports.findOpenPullRequestForBranch = findOpenPullRequestForBranch;
+exports.updatePullRequestBody = updatePullRequestBody;
 exports.addPullRequestLabels = addPullRequestLabels;
 const events_js_1 = __nccwpck_require__(4343);
 async function getDefaultBranch(client) {
@@ -41628,6 +41674,25 @@ async function createDraftPullRequest(client, opts) {
         draft: true,
     });
     return { number: data.number, html_url: data.html_url };
+}
+async function findOpenPullRequestForBranch(client, branch) {
+    const { data } = await client.rest.pulls.list({
+        owner: (0, events_js_1.repoOwner)(),
+        repo: (0, events_js_1.repoName)(),
+        head: `${(0, events_js_1.repoOwner)()}:${branch}`,
+        state: 'open',
+        per_page: 1,
+    });
+    const pr = data[0];
+    return pr ? { number: pr.number, html_url: pr.html_url } : null;
+}
+async function updatePullRequestBody(client, prNumber, body) {
+    await client.rest.pulls.update({
+        owner: (0, events_js_1.repoOwner)(),
+        repo: (0, events_js_1.repoName)(),
+        pull_number: prNumber,
+        body,
+    });
 }
 async function addPullRequestLabels(client, prNumber, labels) {
     if (labels.length === 0)

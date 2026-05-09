@@ -11,7 +11,13 @@ import { TokenBudget } from '../util/budget.js';
 import { renderRunFooter, renderRunDetailsBlock, type RunMetadata } from '../util/sticky.js';
 import { getIssue, postComment, upsertStickyComment } from '../github/issues.js';
 import { addLabels, removeLabel } from '../github/labels.js';
-import { getDefaultBranch, createDraftPullRequest, addPullRequestLabels } from '../github/prs.js';
+import {
+  getDefaultBranch,
+  createDraftPullRequest,
+  addPullRequestLabels,
+  findOpenPullRequestForBranch,
+  updatePullRequestBody,
+} from '../github/prs.js';
 import { Workspace } from './sandbox.js';
 import { workspaceTools } from './tools.js';
 import { detectProject } from './detect.js';
@@ -173,17 +179,59 @@ ${(testOutput.stdout + '\n' + testOutput.stderr).slice(0, 8000)}
   }
 
   const prBody = renderPrBody(issue.number, result.finalText, changed, testCommand, testOutput?.stdout ?? '', runMeta);
-  const pr = await createDraftPullRequest(client, {
-    title: truncateTitle(`Fix: ${issue.title}`, 200),
-    body: prBody,
-    head: branchName,
-    base: baseBranch,
-  });
-  await addPullRequestLabels(client, pr.number, [`${config.labels.prefix}needs-human-review`]);
+  const branchUrl = `https://github.com/${repoOwner()}/${repoName()}/tree/${branchName}`;
+  const compareUrl = `https://github.com/${repoOwner()}/${repoName()}/compare/${baseBranch}...${branchName}`;
+
+  const existing = await findOpenPullRequestForBranch(client, branchName);
+  let pr: { number: number; html_url: string };
+  if (existing) {
+    log.info(`Reusing existing PR #${existing.number} for branch ${branchName}`);
+    try {
+      await updatePullRequestBody(client, existing.number, prBody);
+    } catch (err) {
+      log.warn(`Could not update PR body: ${(err as Error).message}`);
+    }
+    pr = existing;
+  } else {
+    try {
+      pr = await createDraftPullRequest(client, {
+        title: truncateTitle(`Fix: ${issue.title}`, 200),
+        body: prBody,
+        head: branchName,
+        base: baseBranch,
+      });
+    } catch (err) {
+      const msg = (err as Error).message;
+      log.warn(`PR creation failed: ${msg}`);
+      const hint = msg.includes('not permitted to create or approve pull requests')
+        ? '\n\n**Action required:** enable "Allow GitHub Actions to create and approve pull requests" in this repository\'s Actions settings, then re-run by closing and reopening this issue.'
+        : '';
+      const fallback = `### Maintainer fix attempt
+
+Made changes and tests passed, but opening a pull request failed:
+
+\`\`\`
+${msg}
+\`\`\`${hint}
+
+The fix is on branch [\`${branchName}\`](${branchUrl}). Review the diff: [${baseBranch}...${branchName}](${compareUrl}).
+
+**Files changed:** ${changed.join(', ')}${footer}`;
+      await upsertStickyComment(client, issueNumber, 'fix', fallback);
+      await addLabels(client, issueNumber, [`${config.labels.prefix}fix-failed`]);
+      return;
+    }
+  }
+
+  try {
+    await addPullRequestLabels(client, pr.number, [`${config.labels.prefix}needs-human-review`]);
+  } catch (err) {
+    log.warn(`Could not label PR: ${(err as Error).message}`);
+  }
 
   const sticky = `### Maintainer fix attempt
 
-Draft fix proposed in [#${pr.number}](${pr.html_url}). Tests passed. Awaiting your review.
+Draft fix proposed in [#${pr.number}](${pr.html_url}). Tests ${testsPassed === false ? 'were not run' : 'passed'}. Awaiting your review.
 
 **Files changed:** ${changed.join(', ')}
 
