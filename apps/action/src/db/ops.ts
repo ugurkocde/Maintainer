@@ -281,3 +281,13 @@ export async function attachPrToRun(runId: string | null, prId: string): Promise
     return null;
   });
 }
+
+export async function attachIssueToRun(runId: string | null, issueId: string): Promise<void> {
+  const client = db();
+  if (!client || !runId) return;
+  await safe('attachIssueToRun', async () => {
+    const { error } = await client.from('runs').update({ issue_id: issueId }).eq('id', runId);
+    if (error) throw error;
+    return null;
+  });
+}

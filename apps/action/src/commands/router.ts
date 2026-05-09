@@ -10,7 +10,7 @@ import { runFix } from '../fix/run.js';
 import { runIntent } from './intent.js';
 import { runExplain } from './explain.js';
 import { runLearn } from '../context/generate.js';
-import { ensureIssue } from '../db/ops.js';
+import { ensureIssue, attachIssueToRun } from '../db/ops.js';
 import type { RunState } from '../index.js';
 import { log } from '../util/log.js';
 
@@ -56,7 +56,10 @@ export async function handleComment(args: {
         state: issueDetail.state,
         labels: issueDetail.labels,
       });
-      if (issueRow) runState.issueId = issueRow.id;
+      if (issueRow) {
+        runState.issueId = issueRow.id;
+        await attachIssueToRun(runState.runId, issueRow.id);
+      }
     } catch (err) {
       log.warn(`Could not ensure issue row: ${(err as Error).message}`);
     }

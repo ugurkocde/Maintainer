@@ -11,7 +11,7 @@ import { runStale } from './schedule/stale.js';
 import { runDigest } from './schedule/digest.js';
 import { parseIssuesEvent, parseIssueCommentEvent } from './util/events.js';
 import { log } from './util/log.js';
-import { ensureRepo, ensureIssue, startRun, finishRun } from './db/ops.js';
+import { ensureRepo, ensureIssue, startRun, finishRun, attachIssueToRun } from './db/ops.js';
 
 type Mode = 'auto' | 'dashboard' | 'triage-only' | 'fix-only';
 
@@ -120,6 +120,7 @@ async function run(): Promise<void> {
             labels: evt.labels,
           });
           runState.issueId = issue?.id ?? null;
+          if (runState.issueId) await attachIssueToRun(runState.runId, runState.issueId);
         }
 
         const verdict = await runTriage({ client, apiKey, config, event: evt, runState });

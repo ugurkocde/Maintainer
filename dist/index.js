@@ -54813,8 +54813,10 @@ async function handleComment(args) {
                 state: issueDetail.state,
                 labels: issueDetail.labels,
             });
-            if (issueRow)
+            if (issueRow) {
                 runState.issueId = issueRow.id;
+                await (0, ops_js_1.attachIssueToRun)(runState.runId, issueRow.id);
+            }
         }
         catch (err) {
             log_js_1.log.warn(`Could not ensure issue row: ${err.message}`);
@@ -55523,6 +55525,7 @@ exports.recordAgentStep = recordAgentStep;
 exports.finishRun = finishRun;
 exports.recordPullRequest = recordPullRequest;
 exports.attachPrToRun = attachPrToRun;
+exports.attachIssueToRun = attachIssueToRun;
 const client_js_1 = __nccwpck_require__(4882);
 const log_js_1 = __nccwpck_require__(4097);
 const pricing_js_1 = __nccwpck_require__(5069);
@@ -55719,6 +55722,17 @@ async function attachPrToRun(runId, prId) {
         return;
     await safe('attachPrToRun', async () => {
         const { error } = await client.from('runs').update({ pr_id: prId }).eq('id', runId);
+        if (error)
+            throw error;
+        return null;
+    });
+}
+async function attachIssueToRun(runId, issueId) {
+    const client = (0, client_js_1.db)();
+    if (!client || !runId)
+        return;
+    await safe('attachIssueToRun', async () => {
+        const { error } = await client.from('runs').update({ issue_id: issueId }).eq('id', runId);
         if (error)
             throw error;
         return null;
@@ -56910,6 +56924,8 @@ async function run() {
                         labels: evt.labels,
                     });
                     runState.issueId = issue?.id ?? null;
+                    if (runState.issueId)
+                        await (0, ops_js_1.attachIssueToRun)(runState.runId, runState.issueId);
                 }
                 const verdict = await (0, run_js_1.runTriage)({ client, apiKey, config, event: evt, runState });
                 outcome = 'triage_only';
