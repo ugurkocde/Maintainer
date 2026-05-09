@@ -19,4 +19,4 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - README with quickstart, full configuration reference, command list, and dashboard recipe.
 - CONTRIBUTING with architecture overview and release process.
 
-[Unreleased]: https://github.com/ugurkoc/maintainer/commits/main
+[Unreleased]: https://github.com/ugurkocde/Maintainer/commits/main

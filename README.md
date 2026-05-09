@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ugurkoc/maintainer@v1
+      - uses: ugurkocde/Maintainer@v1
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
@@ -147,7 +147,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ugurkoc/maintainer@v1
+      - uses: ugurkocde/Maintainer@v1
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           mode: dashboard

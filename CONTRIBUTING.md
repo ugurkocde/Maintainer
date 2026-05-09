@@ -5,7 +5,7 @@ Thanks for considering a contribution to Maintainer.
 ## Local setup
 
 ```bash
-git clone https://github.com/ugurkoc/maintainer
+git clone https://github.com/ugurkocde/Maintainer
 cd maintainer
 npm install
 npm run all
