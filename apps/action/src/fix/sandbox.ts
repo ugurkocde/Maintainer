@@ -111,11 +111,14 @@ export class Workspace {
   async listChangedFiles(): Promise<string[]> {
     const r = await this.run('git', ['status', '--porcelain'], { timeoutMs: 10_000 });
     if (r.code !== 0) return [];
+    // Porcelain v1 format: `XY PATH` where XY are exactly two status chars
+    // followed by a single space. Slice the first 3 chars off literally
+    // rather than regex-matching, which previously over-ate into filenames
+    // whose first character was an uppercase letter (e.g. "IntuneBrew.ps1").
     return r.stdout
       .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
-      .map((l) => l.replace(/^[A-Z?! ]{1,3}/, '').trim())
+      .filter((l) => l.length > 3)
+      .map((l) => l.slice(3))
       .filter(Boolean);
   }
 

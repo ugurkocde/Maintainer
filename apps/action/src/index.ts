@@ -12,6 +12,7 @@ import { runDigest } from './schedule/digest.js';
 import { parseIssuesEvent, parseIssueCommentEvent } from './util/events.js';
 import { log } from './util/log.js';
 import { ensureRepo, ensureIssue, startRun, finishRun, attachIssueToRun } from './db/ops.js';
+import { mintInstallationToken } from './github/app-auth.js';
 
 type Mode = 'auto' | 'dashboard' | 'triage-only' | 'fix-only';
 
@@ -30,10 +31,25 @@ async function run(): Promise<void> {
 
   try {
     const apiKey = core.getInput('anthropic-api-key', { required: true });
-    const token = core.getInput('github-token') || process.env.GITHUB_TOKEN || '';
+    let token = core.getInput('github-token') || process.env.GITHUB_TOKEN || '';
+
+    const appId = core.getInput('app-id');
+    const appPrivateKey = core.getInput('app-private-key');
+    if (appId && appPrivateKey) {
+      core.setSecret(appPrivateKey);
+      const appToken = await mintInstallationToken({ appId, privateKey: appPrivateKey });
+      if (appToken) {
+        core.setSecret(appToken);
+        token = appToken;
+        log.info('Authenticated as the configured GitHub App; comments and PRs will use the App identity.');
+      } else {
+        log.warn('Falling back to GITHUB_TOKEN; the App identity will not be used for this run.');
+      }
+    }
+
     if (!token) {
       core.setFailed(
-        'No GitHub token available. Either pass `github-token` as an input or run inside a workflow that provides GITHUB_TOKEN.',
+        'No GitHub token available. Either pass `github-token`, or `app-id` plus `app-private-key`, or run inside a workflow that provides GITHUB_TOKEN.',
       );
       return;
     }

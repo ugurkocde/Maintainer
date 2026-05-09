@@ -27,6 +27,12 @@ inputs:
   supabase-secret-key:
     description: 'Supabase service-role key. Only needed when supabase-url is set. Bypasses RLS to write run telemetry.'
     required: false
+  app-id:
+    description: 'GitHub App ID. When set with app-private-key, the Action authenticates as the App and comments and PRs are attributed to the App identity (custom name and avatar).'
+    required: false
+  app-private-key:
+    description: 'GitHub App private key (PEM). Required when app-id is set. The Action mints a short-lived installation access token at run start.'
+    required: false
 
 runs:
   using: 'node24'
