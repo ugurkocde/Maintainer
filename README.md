@@ -44,6 +44,7 @@ jobs:
       - uses: ugurkocde/Maintainer@v1
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
 ### 3. Commit
@@ -150,6 +151,7 @@ jobs:
       - uses: ugurkocde/Maintainer@v1
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           mode: dashboard
 ```
 
