@@ -7,7 +7,7 @@ import { anthropic } from '../agent/client.js';
 import { FIX_PROMPT } from '../agent/prompts.js';
 import { runAgent } from '../agent/loop.js';
 import { TokenBudget } from '../util/budget.js';
-import { renderRunFooter } from '../util/sticky.js';
+import { renderRunFooter, renderRunDetailsBlock, type RunMetadata } from '../util/sticky.js';
 import { getIssue, postComment, upsertStickyComment } from '../github/issues.js';
 import { addLabels, removeLabel } from '../github/labels.js';
 import { getDefaultBranch, createDraftPullRequest, addPullRequestLabels } from '../github/prs.js';
@@ -87,12 +87,13 @@ Your job: implement a minimal correct fix and verify it with the test command ab
   });
 
   const changed = await ws.listChangedFiles();
-  const footer = renderRunFooter({
+  const runMeta: RunMetadata = {
     model: config.fix.model,
     inputTokens: budget.used().input,
     outputTokens: budget.used().output,
     runtimeMs: Date.now() - start,
-  });
+  };
+  const footer = renderRunFooter(runMeta);
 
   if (changed.length === 0) {
     const body = `### Maintainer fix attempt
@@ -145,7 +146,7 @@ ${(testOutput.stdout + '\n' + testOutput.stderr).slice(0, 8000)}
     return;
   }
 
-  const prBody = renderPrBody(issue.number, result.finalText, changed, testCommand, testOutput?.stdout ?? '');
+  const prBody = renderPrBody(issue.number, result.finalText, changed, testCommand, testOutput?.stdout ?? '', runMeta);
   const pr = await createDraftPullRequest(client, {
     title: truncateTitle(`Fix: ${issue.title}`, 200),
     body: prBody,
@@ -220,8 +221,10 @@ function renderPrBody(
   files: string[],
   testCommand: string | undefined,
   testOut: string,
+  runMeta: RunMetadata,
 ): string {
   const summary = agentSummary.trim() || '(no summary provided)';
+  const runDetails = renderRunDetailsBlock(runMeta);
   return `Fixes #${issueNumber}
 
 ## Summary
@@ -243,6 +246,8 @@ ${testOut.slice(0, 6000)}
 \`\`\`
 
 </details>
+
+${runDetails}
 
 ---
 

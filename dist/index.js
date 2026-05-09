@@ -40852,12 +40852,13 @@ Your job: implement a minimal correct fix and verify it with the test command ab
         maxTokensPerCall: 8192,
     });
     const changed = await ws.listChangedFiles();
-    const footer = (0, sticky_js_1.renderRunFooter)({
+    const runMeta = {
         model: config.fix.model,
         inputTokens: budget.used().input,
         outputTokens: budget.used().output,
         runtimeMs: Date.now() - start,
-    });
+    };
+    const footer = (0, sticky_js_1.renderRunFooter)(runMeta);
     if (changed.length === 0) {
         const body = `### Maintainer fix attempt
 
@@ -40900,7 +40901,7 @@ ${(testOutput.stdout + '\n' + testOutput.stderr).slice(0, 8000)}
         await (0, issues_js_1.upsertStickyComment)(client, issueNumber, 'fix', `### Maintainer fix attempt\n\nMade changes and tests passed, but pushing the fix branch failed. Check the Action logs.${footer}`);
         return;
     }
-    const prBody = renderPrBody(issue.number, result.finalText, changed, testCommand, testOutput?.stdout ?? '');
+    const prBody = renderPrBody(issue.number, result.finalText, changed, testCommand, testOutput?.stdout ?? '', runMeta);
     const pr = await (0, prs_js_1.createDraftPullRequest)(client, {
         title: truncateTitle(`Fix: ${issue.title}`, 200),
         body: prBody,
@@ -40955,8 +40956,9 @@ async function commitAndPush(ws, branch, base, issueNumber) {
     }
     return true;
 }
-function renderPrBody(issueNumber, agentSummary, files, testCommand, testOut) {
+function renderPrBody(issueNumber, agentSummary, files, testCommand, testOut, runMeta) {
     const summary = agentSummary.trim() || '(no summary provided)';
+    const runDetails = (0, sticky_js_1.renderRunDetailsBlock)(runMeta);
     return `Fixes #${issueNumber}
 
 ## Summary
@@ -40978,6 +40980,8 @@ ${testOut.slice(0, 6000)}
 \`\`\`
 
 </details>
+
+${runDetails}
 
 ---
 
@@ -42186,8 +42190,40 @@ exports.log = {
 
 /***/ }),
 
-/***/ 9589:
+/***/ 9569:
 /***/ ((__unused_webpack_module, exports) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.estimateCost = estimateCost;
+exports.formatCost = formatCost;
+const PRICES = {
+    'claude-opus-4-7': { inputPerM: 15, outputPerM: 75 },
+    'claude-sonnet-4-6': { inputPerM: 3, outputPerM: 15 },
+    'claude-haiku-4-5': { inputPerM: 1, outputPerM: 5 },
+    'claude-haiku-4-5-20251001': { inputPerM: 1, outputPerM: 5 },
+};
+function estimateCost(model, inputTokens, outputTokens) {
+    const key = Object.keys(PRICES).find((k) => model === k || model.startsWith(`${k}-`));
+    if (!key)
+        return null;
+    const p = PRICES[key];
+    return (inputTokens * p.inputPerM + outputTokens * p.outputPerM) / 1_000_000;
+}
+function formatCost(usd) {
+    if (usd < 0.01)
+        return '<$0.01';
+    if (usd < 1)
+        return `$${usd.toFixed(3)}`;
+    return `$${usd.toFixed(2)}`;
+}
+
+
+/***/ }),
+
+/***/ 9589:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 "use strict";
 
@@ -42196,6 +42232,8 @@ exports.stickyMarker = stickyMarker;
 exports.findStickyComment = findStickyComment;
 exports.withStickyMarker = withStickyMarker;
 exports.renderRunFooter = renderRunFooter;
+exports.renderRunDetailsBlock = renderRunDetailsBlock;
+const pricing_js_1 = __nccwpck_require__(9569);
 const PREFIX = '<!-- maintainer:state';
 function stickyMarker(flow) {
     return `${PREFIX}:${flow} -->`;
@@ -42210,8 +42248,24 @@ function withStickyMarker(flow, body) {
 function renderRunFooter(opts) {
     const tokens = `${formatTokens(opts.inputTokens)} in / ${formatTokens(opts.outputTokens)} out`;
     const runtime = `${(opts.runtimeMs / 1000).toFixed(1)}s`;
+    const cost = (0, pricing_js_1.estimateCost)(opts.model, opts.inputTokens, opts.outputTokens);
+    const costStr = cost !== null ? ` | cost: ~${(0, pricing_js_1.formatCost)(cost)}` : '';
     const ts = new Date().toISOString().replace('T', ' ').replace(/\..+/, ' UTC');
-    return `\n\n---\nRun: ${ts} | model: ${opts.model} | tokens: ${tokens} | runtime: ${runtime}`;
+    return `\n\n---\nRun: ${ts} | model: ${opts.model} | tokens: ${tokens}${costStr} | runtime: ${runtime}`;
+}
+function renderRunDetailsBlock(opts) {
+    const cost = (0, pricing_js_1.estimateCost)(opts.model, opts.inputTokens, opts.outputTokens);
+    const costLine = cost !== null ? `- Estimated cost: ~${(0, pricing_js_1.formatCost)(cost)}` : '- Estimated cost: unknown (pricing not in table)';
+    return [
+        '## Run details',
+        '',
+        `- Model: \`${opts.model}\``,
+        `- Input tokens: ${opts.inputTokens.toLocaleString()}`,
+        `- Output tokens: ${opts.outputTokens.toLocaleString()}`,
+        costLine,
+        `- Runtime: ${(opts.runtimeMs / 1000).toFixed(1)}s`,
+        `- Generated: ${new Date().toISOString()}`,
+    ].join('\n');
 }
 function formatTokens(n) {
     if (n < 1000)
