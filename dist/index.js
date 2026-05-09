@@ -39816,8 +39816,15 @@ exports.anthropic = anthropic;
 const sdk_1 = __importDefault(__nccwpck_require__(121));
 let cached;
 function anthropic(apiKey) {
-    if (!cached)
-        cached = new sdk_1.default({ apiKey });
+    if (!cached) {
+        cached = new sdk_1.default({
+            apiKey,
+            // SDK respects retry-after on 429 and 5xx with exponential backoff.
+            // Bumping from the default 2 lets normal Tier 1/2 rate-limit spikes
+            // recover without aborting the agent loop.
+            maxRetries: 6,
+        });
+    }
     return cached;
 }
 exports.MODELS = {
@@ -39871,8 +39878,9 @@ async function runAgent(opts) {
             });
         }
         catch (err) {
-            log_js_1.log.error(`Anthropic call failed: ${err.message}`);
-            stopReason = 'api_error';
+            const msg = err.message;
+            log_js_1.log.error(`Anthropic call failed after retries: ${msg}`);
+            stopReason = msg.includes('rate_limit') ? 'rate_limited' : 'api_error';
             break;
         }
         inputTokens += response.usage.input_tokens;

@@ -73,8 +73,9 @@ export async function runAgent(opts: AgentRunOpts): Promise<AgentRunResult> {
         tools: tools.length > 0 ? toolsWithCache(tools.map((t) => t.spec)) : undefined,
       });
     } catch (err) {
-      log.error(`Anthropic call failed: ${(err as Error).message}`);
-      stopReason = 'api_error';
+      const msg = (err as Error).message;
+      log.error(`Anthropic call failed after retries: ${msg}`);
+      stopReason = msg.includes('rate_limit') ? 'rate_limited' : 'api_error';
       break;
     }
 
