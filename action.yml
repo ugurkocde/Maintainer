@@ -8,12 +8,11 @@ branding:
 
 inputs:
   anthropic-api-key:
-    description: 'Anthropic API key. Set as a repository or organization secret and pass via ${{ secrets.ANTHROPIC_API_KEY }}.'
+    description: 'Anthropic API key. Set as a repository or organization secret named ANTHROPIC_API_KEY and pass it through the workflow.'
     required: true
   github-token:
-    description: 'GitHub token for repo writes. Defaults to the auto-injected GITHUB_TOKEN of the workflow.'
+    description: 'GitHub token for repo writes. If omitted, the auto-injected GITHUB_TOKEN of the workflow is used.'
     required: false
-    default: ${{ github.token }}
   mode:
     description: 'Run mode. One of: auto (default, route by event), dashboard (cross-repo aggregation only), triage-only, fix-only.'
     required: false

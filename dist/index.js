@@ -41664,7 +41664,11 @@ const log_js_1 = __nccwpck_require__(9906);
 async function run() {
     try {
         const apiKey = core.getInput('anthropic-api-key', { required: true });
-        const token = core.getInput('github-token', { required: true });
+        const token = core.getInput('github-token') || process.env.GITHUB_TOKEN || '';
+        if (!token) {
+            core.setFailed('No GitHub token available. Either pass `github-token` as an input or run inside a workflow that provides GITHUB_TOKEN.');
+            return;
+        }
         const mode = (core.getInput('mode') || 'auto');
         const configPath = core.getInput('config-path') || '.github/maintainer.yml';
         core.setSecret(apiKey);

@@ -16,7 +16,13 @@ type Mode = 'auto' | 'dashboard' | 'triage-only' | 'fix-only';
 async function run(): Promise<void> {
   try {
     const apiKey = core.getInput('anthropic-api-key', { required: true });
-    const token = core.getInput('github-token', { required: true });
+    const token = core.getInput('github-token') || process.env.GITHUB_TOKEN || '';
+    if (!token) {
+      core.setFailed(
+        'No GitHub token available. Either pass `github-token` as an input or run inside a workflow that provides GITHUB_TOKEN.',
+      );
+      return;
+    }
     const mode = (core.getInput('mode') || 'auto') as Mode;
     const configPath = core.getInput('config-path') || '.github/maintainer.yml';
 
