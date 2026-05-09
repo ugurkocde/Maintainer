@@ -25,13 +25,15 @@ export type AgentRunResult = {
   steps: number;
   stopReason: string;
   toolCalls: number;
+  messages: MessageParam[];
 };
 
 export type AgentRunOpts = {
   client: Anthropic;
   model: string;
   systemPrompt: string;
-  userPrompt: string;
+  userPrompt?: string;
+  priorMessages?: MessageParam[];
   tools?: AgentTool[];
   budget: TokenBudget;
   maxSteps?: number;
@@ -41,7 +43,11 @@ export type AgentRunOpts = {
 export async function runAgent(opts: AgentRunOpts): Promise<AgentRunResult> {
   const tools = opts.tools ?? [];
   const toolMap = new Map(tools.map((t) => [t.spec.name, t.handler]));
-  const messages: MessageParam[] = [{ role: 'user', content: opts.userPrompt }];
+  const messages: MessageParam[] = opts.priorMessages ? [...opts.priorMessages] : [];
+  if (opts.userPrompt) messages.push({ role: 'user', content: opts.userPrompt });
+  if (messages.length === 0) {
+    throw new Error('runAgent requires either userPrompt or priorMessages.');
+  }
   const maxSteps = opts.maxSteps ?? 30;
   const maxTokensPerCall = opts.maxTokensPerCall ?? 4096;
 
@@ -117,7 +123,7 @@ export async function runAgent(opts: AgentRunOpts): Promise<AgentRunResult> {
     messages.push({ role: 'user', content: toolResults });
   }
 
-  return { finalText, inputTokens, outputTokens, steps: messages.length, stopReason, toolCalls };
+  return { finalText, inputTokens, outputTokens, steps: messages.length, stopReason, toolCalls, messages };
 }
 
 function extractText(content: Message['content']): string {

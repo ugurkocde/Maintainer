@@ -1,6 +1,7 @@
 import { promises as fs } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages';
 import type { Octokit } from '../github/client.js';
 import type { Config } from '../config/schema.js';
 import { anthropic } from '../agent/client.js';
@@ -75,8 +76,9 @@ ${issue.body || '(empty)'}
 Your job: implement a minimal correct fix and verify it with the test command above. If the test command is unknown, infer it from the project and proceed. When done, emit a final text block summarizing the fix, files changed, and test outcome. If you cannot fix it, emit a final text block describing what you tried and why you stopped.`;
 
   const tools = workspaceTools(ws);
-  const result = await runAgent({
-    client: anthropic(apiKey),
+  const anth = anthropic(apiKey);
+  let result = await runAgent({
+    client: anth,
     model: config.fix.model,
     systemPrompt: FIX_PROMPT,
     userPrompt,
@@ -86,7 +88,32 @@ Your job: implement a minimal correct fix and verify it with the test command ab
     maxTokensPerCall: 8192,
   });
 
-  const changed = await ws.listChangedFiles();
+  let changed = await ws.listChangedFiles();
+
+  if (
+    changed.length === 0 &&
+    !budget.exhausted() &&
+    result.stopReason !== 'api_error' &&
+    result.toolCalls > 0
+  ) {
+    log.info('Agent ended without writing files. Sending one nudge to apply the fix.');
+    const nudge: MessageParam = {
+      role: 'user',
+      content:
+        'You ended the previous turn without calling write_file. No files were changed on disk. Apply your fix now using write_file. Tool calls only. Do not describe what you will do; do it.',
+    };
+    result = await runAgent({
+      client: anth,
+      model: config.fix.model,
+      systemPrompt: FIX_PROMPT,
+      priorMessages: [...result.messages, nudge],
+      tools,
+      budget,
+      maxSteps: Math.min(10, config.fix.max_steps),
+      maxTokensPerCall: 8192,
+    });
+    changed = await ws.listChangedFiles();
+  }
   const runMeta: RunMetadata = {
     model: config.fix.model,
     usage: budget.used(),
