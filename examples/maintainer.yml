@@ -1,0 +1,43 @@
+# Example .github/maintainer.yml
+# Drop this file into the repository you want maintained.
+# All keys are optional. Defaults are shown as comments.
+
+triage:
+  enabled: true
+  # model: claude-sonnet-4-6
+  # auto_label: true
+  # auto_dedupe: true
+
+fix:
+  enabled: true
+  # model: claude-opus-4-7
+  # auto_attempt: true
+  # timeout_minutes: 20
+  # max_input_tokens: 500000
+  # max_output_tokens: 50000
+  # max_steps: 40
+  # test_command: "npm test"
+
+commands:
+  enabled: true
+  # require_write_permission: true
+  # intent_model: claude-sonnet-4-6
+
+stale:
+  enabled: true
+  # days_until_stale: 60
+  # days_until_close: 14
+  # exempt_labels: [pinned, security]
+
+# dashboard:
+#   enabled: true
+#   repos:
+#     - your-org/repo-1
+#     - your-org/repo-2
+#   output_path: STATUS.md
+#   open_briefing_issue: true
+
+# labels:
+#   prefix: "maintainer:"
+
+# skip_label: "maintainer:skip"

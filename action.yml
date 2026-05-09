@@ -1,0 +1,28 @@
+name: 'Maintainer'
+description: 'Automatic maintenance for your repository. Triages issues, drafts fix PRs, and keeps an overview across your projects.'
+author: 'ugurkoc'
+
+branding:
+  icon: 'tool'
+  color: 'purple'
+
+inputs:
+  anthropic-api-key:
+    description: 'Anthropic API key. Set as a repository or organization secret and pass via ${{ secrets.ANTHROPIC_API_KEY }}.'
+    required: true
+  github-token:
+    description: 'GitHub token for repo writes. Defaults to the auto-injected GITHUB_TOKEN of the workflow.'
+    required: false
+    default: ${{ github.token }}
+  mode:
+    description: 'Run mode. One of: auto (default, route by event), dashboard (cross-repo aggregation only), triage-only, fix-only.'
+    required: false
+    default: 'auto'
+  config-path:
+    description: 'Path to the maintainer config file inside the repo.'
+    required: false
+    default: '.github/maintainer.yml'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

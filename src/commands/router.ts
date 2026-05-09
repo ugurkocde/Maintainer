@@ -1,0 +1,156 @@
+import type { Octokit } from '../github/client.js';
+import type { Config } from '../config/schema.js';
+import type { ParsedIssueCommentEvent } from '../util/events.js';
+import { parseCommand } from './parse.js';
+import { isBotAuthor } from '../github/client.js';
+import { reactToComment, userHasWriteAccess, getIssue, postComment } from '../github/issues.js';
+import { addLabels } from '../github/labels.js';
+import { runTriage } from '../triage/run.js';
+import { runFix } from '../fix/run.js';
+import { runIntent } from './intent.js';
+import { runExplain } from './explain.js';
+import { log } from '../util/log.js';
+
+export async function handleComment(args: {
+  client: Octokit;
+  apiKey: string;
+  config: Config;
+  event: ParsedIssueCommentEvent;
+}): Promise<void> {
+  const { client, apiKey, config, event } = args;
+
+  if (isBotAuthor(event.comment_author)) {
+    log.debug('Ignoring comment by bot author.');
+    return;
+  }
+
+  const parsed = parseCommand(event.comment_body);
+  if (parsed.kind === 'none') return;
+
+  if (config.commands.require_write_permission) {
+    const ok = await userHasWriteAccess(client, event.comment_author);
+    if (!ok) {
+      log.info(`Ignoring command from non-collaborator @${event.comment_author}`);
+      return;
+    }
+  }
+
+  await reactToComment(client, event.comment_id, 'eyes');
+
+  try {
+    if (parsed.kind === 'slash') {
+      await handleSlash(parsed.command, parsed.args, args);
+    } else {
+      await runIntent({
+        client,
+        apiKey,
+        config,
+        issueNumber: event.issue_number,
+        commentId: event.comment_id,
+        instruction: parsed.instruction,
+        invokedBy: event.comment_author,
+      });
+    }
+    await reactToComment(client, event.comment_id, 'rocket');
+    await reactToComment(client, event.comment_id, '+1');
+  } catch (err) {
+    log.error(`Command failed: ${(err as Error).message}`);
+    await reactToComment(client, event.comment_id, 'confused');
+    await postComment(
+      client,
+      event.issue_number,
+      `Maintainer hit an error executing that command:\n\n\`\`\`\n${(err as Error).message}\n\`\`\``,
+    );
+  }
+}
+
+async function handleSlash(
+  command: string,
+  cmdArgs: string,
+  ctx: { client: Octokit; apiKey: string; config: Config; event: ParsedIssueCommentEvent },
+): Promise<void> {
+  const { client, apiKey, config, event } = ctx;
+
+  switch (command) {
+    case 'triage': {
+      const issue = await getIssue(client, event.issue_number);
+      await runTriage({
+        client,
+        apiKey,
+        config,
+        event: {
+          action: 'edited',
+          issue_number: issue.number,
+          title: issue.title,
+          body: issue.body,
+          author: issue.author,
+          labels: issue.labels,
+          state: issue.state,
+          is_pull_request: issue.is_pull_request,
+        },
+      });
+      break;
+    }
+    case 'fix': {
+      await runFix({ client, apiKey, config, issueNumber: event.issue_number });
+      break;
+    }
+    case 'skip': {
+      await addLabels(client, event.issue_number, [config.skip_label]);
+      await postComment(
+        client,
+        event.issue_number,
+        'Maintainer will skip this issue. Remove the skip label to re-enable automation.',
+      );
+      break;
+    }
+    case 'explain': {
+      await runExplain({ client, apiKey, config, issueNumber: event.issue_number });
+      break;
+    }
+    case 'dedupe': {
+      const issue = await getIssue(client, event.issue_number);
+      await runTriage({
+        client,
+        apiKey,
+        config,
+        event: {
+          action: 'edited',
+          issue_number: issue.number,
+          title: issue.title,
+          body: issue.body,
+          author: issue.author,
+          labels: issue.labels,
+          state: issue.state,
+          is_pull_request: issue.is_pull_request,
+        },
+      });
+      break;
+    }
+    case 'help': {
+      await postComment(client, event.issue_number, helpText());
+      break;
+    }
+    default:
+      await postComment(
+        client,
+        event.issue_number,
+        `Unknown command: \`/maintainer ${command}\`. Try \`/maintainer help\`.${cmdArgs ? '' : ''}`,
+      );
+  }
+}
+
+function helpText(): string {
+  return [
+    '**Maintainer commands**',
+    '',
+    '- `/maintainer triage` — re-run triage on this issue',
+    '- `/maintainer fix` — attempt a fix and open a draft pull request',
+    '- `/maintainer explain` — rewrite this issue in plain language',
+    '- `/maintainer dedupe` — re-search for duplicates',
+    '- `/maintainer skip` — disable automation for this issue',
+    '- `/maintainer help` — show this list',
+    '',
+    'You can also write `@maintainer <natural language instruction>` for free-form requests.',
+  ].join('\n');
+}

@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run all
+
+      - name: Verify dist matches source
+        run: |
+          if [ -n "$(git status --porcelain dist/)" ]; then
+            echo "dist/ is out of date. Run 'npm run build' and commit the result."
+            git diff dist/
+            exit 1
+          fi
+
+      - name: Update major version tag
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          major="${REF_NAME%%.*}"
+          git tag -f "$major"
+          git push origin "$major" --force
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
