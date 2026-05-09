@@ -23,15 +23,21 @@ export class TokenBudget {
     this.cacheRead += input.cacheReadTokens ?? 0;
   }
 
+  // Cache writes cost 1.25x input rate; cache reads cost 0.1x. Weighting them
+  // here keeps the budget cap aligned with real spend rather than raw token
+  // volume, so multi-turn agents with heavy caching stay productive within
+  // the cap instead of getting cut off prematurely.
+  private effectiveInput(): number {
+    return this.inputUsed + this.cacheCreation * 1.25 + this.cacheRead * 0.1;
+  }
+
   exhausted(): boolean {
-    const inputTotal = this.inputUsed + this.cacheCreation + this.cacheRead;
-    return inputTotal >= this.maxInput || this.outputUsed >= this.maxOutput;
+    return this.effectiveInput() >= this.maxInput || this.outputUsed >= this.maxOutput;
   }
 
   remaining(): { input: number; output: number } {
-    const inputTotal = this.inputUsed + this.cacheCreation + this.cacheRead;
     return {
-      input: Math.max(0, this.maxInput - inputTotal),
+      input: Math.max(0, this.maxInput - this.effectiveInput()),
       output: Math.max(0, this.maxOutput - this.outputUsed),
     };
   }
