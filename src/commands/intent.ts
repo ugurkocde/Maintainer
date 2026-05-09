@@ -16,6 +16,8 @@ import {
 import { addLabels, removeLabel } from '../github/labels.js';
 import { runFix } from '../fix/run.js';
 import { runTriage } from '../triage/run.js';
+import { loadProjectContext } from '../context/load.js';
+import { CONTEXT_FILE_PATH } from '../context/path.js';
 import { log } from '../util/log.js';
 
 export async function runIntent(args: {
@@ -35,12 +37,17 @@ export async function runIntent(args: {
   const comments = await listComments(client, issueNumber);
   const recentComments = comments.slice(-10);
 
+  const projectContext = await loadProjectContext(process.env.GITHUB_WORKSPACE ?? process.cwd());
+  const contextSection = projectContext
+    ? `\nProject context (from ${CONTEXT_FILE_PATH}):\n"""\n${projectContext}\n"""\n`
+    : '';
+
   const userPrompt = `Repository: ${process.env.GITHUB_REPOSITORY ?? 'unknown'}
 Issue #${issue.number}: ${issue.title}
 State: ${issue.state}
 Labels: ${issue.labels.join(', ') || 'none'}
 Author: @${issue.author}
-
+${contextSection}
 Body:
 """
 ${issue.body || '(empty)'}

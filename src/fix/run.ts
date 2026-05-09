@@ -22,6 +22,8 @@ import { Workspace } from './sandbox.js';
 import { workspaceTools } from './tools.js';
 import { detectProject } from './detect.js';
 import { repoOwner, repoName } from '../util/events.js';
+import { loadProjectContext } from '../context/load.js';
+import { CONTEXT_FILE_PATH } from '../context/path.js';
 import { log } from '../util/log.js';
 
 export async function runFix(args: {
@@ -64,6 +66,11 @@ export async function runFix(args: {
 
   const budget = new TokenBudget(config.fix.max_input_tokens, config.fix.max_output_tokens);
 
+  const projectContext = await loadProjectContext(workspaceRoot);
+  const contextSection = projectContext
+    ? `\nProject context (from ${CONTEXT_FILE_PATH}):\n"""\n${projectContext}\n"""\n\nUse this as your starting map. Verify file paths and line numbers before editing, but skip broad re-exploration unless the context is clearly stale.`
+    : `\nNo project-context file at ${CONTEXT_FILE_PATH}. Future runs will be cheaper if a maintainer runs \`/maintainer learn\` to generate one.`;
+
   const userPrompt = `Repository: ${repoOwner()}/${repoName()}
 Issue #${issue.number}: ${issue.title}
 Reporter: @${issue.author}
@@ -73,6 +80,7 @@ Detected project:
 - language: ${project.language}
 - package_manager: ${project.package_manager ?? 'n/a'}
 - test_command: ${testCommand ?? 'unknown'}
+${contextSection}
 
 Issue body:
 """

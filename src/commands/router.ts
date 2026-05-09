@@ -9,6 +9,7 @@ import { runTriage } from '../triage/run.js';
 import { runFix } from '../fix/run.js';
 import { runIntent } from './intent.js';
 import { runExplain } from './explain.js';
+import { runLearn } from '../context/generate.js';
 import { log } from '../util/log.js';
 
 export async function handleComment(args: {
@@ -127,6 +128,10 @@ async function handleSlash(
       });
       break;
     }
+    case 'learn': {
+      await runLearn({ client, apiKey, config, issueNumber: event.issue_number });
+      break;
+    }
     case 'help': {
       await postComment(client, event.issue_number, helpText());
       break;
@@ -149,6 +154,7 @@ function helpText(): string {
     '- `/maintainer explain` — rewrite this issue in plain language',
     '- `/maintainer dedupe` — re-search for duplicates',
     '- `/maintainer skip` — disable automation for this issue',
+    '- `/maintainer learn` — regenerate the project-context document used by future runs',
     '- `/maintainer help` — show this list',
     '',
     'You can also write `@maintainer <natural language instruction>` for free-form requests.',
