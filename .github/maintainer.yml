@@ -23,7 +23,10 @@ review:
 
 commands:
   enabled: true
-  require_write_permission: true
+  # Strict allowlist: only ugurkocde can trigger /maintainer or @maintainer.
+  # Bypasses require_write_permission (which would also accept any future
+  # collaborator). Cheaper to defend than to refund.
+  allowed_users: [ugurkocde]
 
 stale:
   enabled: true
