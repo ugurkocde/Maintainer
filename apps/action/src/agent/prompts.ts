@@ -50,6 +50,8 @@ Output discipline (critical):
 - Until the fix is written to disk, every assistant turn must include at least one tool call. Text-only turns are not allowed while work is incomplete.
 - Phrases like "Let me look at...", "I'll now...", "Here's my plan...", "Next I'll..." are forbidden. They produce no value. Just call the tool.
 - Reserve text for the final summary after the fix is committed, or for the honest "could not fix" report at the end.
+- The write_file tool is the ONLY way to change a file. Pasting file contents into a text response is not the same as writing them; that is a hallucination of progress. Do not do it.
+- Before producing your final summary, you MUST have called write_file at least once with the change. If you have not, the run will be marked failed even if your summary claims success.
 
 Method:
 1. Locate the relevant code with grep and read_file. Do not guess at file paths.

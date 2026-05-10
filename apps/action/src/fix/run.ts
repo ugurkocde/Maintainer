@@ -133,20 +133,27 @@ Your job: implement a minimal correct fix and verify it with the test command ab
     maxTokensPerCall: 8192,
   });
 
-  let changed = await ws.listChangedFiles();
+  // True signal of "agent did real work" is whether write_file was called.
+  // git status alone can be polluted by side effects (npm install touching
+  // the lockfile, build artifacts), and a finalText that claims success
+  // doesn't prove anything. We check writtenPaths.
+  const hallucinated = (): boolean =>
+    ws.writtenPaths.size === 0 &&
+    /(I (?:created|wrote|added)|now contains|patch applied|fix is in place|file (?:was|is) (?:created|written)|here(?:'s| is) the (?:updated|new) )/i.test(
+      result.finalText,
+    );
 
   if (
-    changed.length === 0 &&
+    ws.writtenPaths.size === 0 &&
     !budget.exhausted() &&
     result.stopReason !== 'api_error' &&
     result.toolCalls > 0
   ) {
-    log.info('Agent ended without writing files. Sending one nudge to apply the fix.');
-    const nudge: MessageParam = {
-      role: 'user',
-      content:
-        'You ended the previous turn without calling write_file. No files were changed on disk. Apply your fix now using write_file. Tool calls only. Do not describe what you will do; do it.',
-    };
+    const reason = hallucinated()
+      ? 'You wrote text that claims the file was changed, but you never called the write_file tool. Pasting file contents into a message is not the same as writing them. Call write_file with the exact path and full new content. This is not optional. Stop summarizing and call the tool now.'
+      : 'You ended the previous turn without calling write_file. No files were changed on disk. Apply your fix now using write_file. Tool calls only. Do not describe what you will do; do it.';
+    log.info(`Agent did not write any files. Sending nudge: ${hallucinated() ? 'hallucination' : 'idle'}.`);
+    const nudge: MessageParam = { role: 'user', content: reason };
     result = await runAgent({
       client: anth,
       model: config.fix.model,
@@ -157,8 +164,9 @@ Your job: implement a minimal correct fix and verify it with the test command ab
       maxSteps: Math.min(10, config.fix.max_steps),
       maxTokensPerCall: 8192,
     });
-    changed = await ws.listChangedFiles();
   }
+
+  let changed = await ws.listChangedFiles();
 
   // Scope to files the agent intentionally wrote via write_file. Side-effect
   // mutations (npm install touching package-lock.json, build artifacts, etc.)
@@ -167,6 +175,11 @@ Your job: implement a minimal correct fix and verify it with the test command ab
   if (ws.writtenPaths.size > 0) {
     const intentional = ws.writtenPaths;
     changed = changed.filter((f) => intentional.has(f));
+  } else {
+    // No write_file calls happened; treat any git status output as side
+    // effects and bail. The "no files changed" branch will record the
+    // honest verdict.
+    changed = [];
   }
 
   const runMeta: RunMetadata = {

@@ -54422,6 +54422,8 @@ Output discipline (critical):
 - Until the fix is written to disk, every assistant turn must include at least one tool call. Text-only turns are not allowed while work is incomplete.
 - Phrases like "Let me look at...", "I'll now...", "Here's my plan...", "Next I'll..." are forbidden. They produce no value. Just call the tool.
 - Reserve text for the final summary after the fix is committed, or for the honest "could not fix" report at the end.
+- The write_file tool is the ONLY way to change a file. Pasting file contents into a text response is not the same as writing them; that is a hallucination of progress. Do not do it.
+- Before producing your final summary, you MUST have called write_file at least once with the change. If you have not, the run will be marked failed even if your summary claims success.
 
 Method:
 1. Locate the relevant code with grep and read_file. Do not guess at file paths.
@@ -55966,16 +55968,21 @@ Your job: implement a minimal correct fix and verify it with the test command ab
         maxSteps: config.fix.max_steps,
         maxTokensPerCall: 8192,
     });
-    let changed = await ws.listChangedFiles();
-    if (changed.length === 0 &&
+    // True signal of "agent did real work" is whether write_file was called.
+    // git status alone can be polluted by side effects (npm install touching
+    // the lockfile, build artifacts), and a finalText that claims success
+    // doesn't prove anything. We check writtenPaths.
+    const hallucinated = () => ws.writtenPaths.size === 0 &&
+        /(I (?:created|wrote|added)|now contains|patch applied|fix is in place|file (?:was|is) (?:created|written)|here(?:'s| is) the (?:updated|new) )/i.test(result.finalText);
+    if (ws.writtenPaths.size === 0 &&
         !budget.exhausted() &&
         result.stopReason !== 'api_error' &&
         result.toolCalls > 0) {
-        log_js_1.log.info('Agent ended without writing files. Sending one nudge to apply the fix.');
-        const nudge = {
-            role: 'user',
-            content: 'You ended the previous turn without calling write_file. No files were changed on disk. Apply your fix now using write_file. Tool calls only. Do not describe what you will do; do it.',
-        };
+        const reason = hallucinated()
+            ? 'You wrote text that claims the file was changed, but you never called the write_file tool. Pasting file contents into a message is not the same as writing them. Call write_file with the exact path and full new content. This is not optional. Stop summarizing and call the tool now.'
+            : 'You ended the previous turn without calling write_file. No files were changed on disk. Apply your fix now using write_file. Tool calls only. Do not describe what you will do; do it.';
+        log_js_1.log.info(`Agent did not write any files. Sending nudge: ${hallucinated() ? 'hallucination' : 'idle'}.`);
+        const nudge = { role: 'user', content: reason };
         result = await (0, loop_js_1.runAgent)({
             client: anth,
             model: config.fix.model,
@@ -55986,8 +55993,8 @@ Your job: implement a minimal correct fix and verify it with the test command ab
             maxSteps: Math.min(10, config.fix.max_steps),
             maxTokensPerCall: 8192,
         });
-        changed = await ws.listChangedFiles();
     }
+    let changed = await ws.listChangedFiles();
     // Scope to files the agent intentionally wrote via write_file. Side-effect
     // mutations (npm install touching package-lock.json, build artifacts, etc.)
     // appear in `git status` but never in writtenPaths, so they get filtered
@@ -55995,6 +56002,12 @@ Your job: implement a minimal correct fix and verify it with the test command ab
     if (ws.writtenPaths.size > 0) {
         const intentional = ws.writtenPaths;
         changed = changed.filter((f) => intentional.has(f));
+    }
+    else {
+        // No write_file calls happened; treat any git status output as side
+        // effects and bail. The "no files changed" branch will record the
+        // honest verdict.
+        changed = [];
     }
     const runMeta = {
         model: config.fix.model,
