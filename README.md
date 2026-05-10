@@ -1,13 +1,22 @@
 # Maintainer
 
-Automatic maintenance for your GitHub repositories. Triages every new issue, deduplicates against existing ones, and drafts pull requests for scoped, reproducible bugs. One workflow file, no backend, runs entirely inside GitHub Actions.
+[![CI](https://github.com/ugurkocde/Maintainer/actions/workflows/test.yml/badge.svg)](https://github.com/ugurkocde/Maintainer/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/ugurkocde/Maintainer?include_prereleases&label=release)](https://github.com/ugurkocde/Maintainer/releases)
+[![License](https://img.shields.io/github/license/ugurkocde/Maintainer)](LICENSE)
+[![Live dashboard](https://img.shields.io/badge/live-dashboard-7c5cff)](https://maintainer.ugurlabs.com)
+
+A fleet of AI agents that keeps open-source repositories healthy. Triages every new issue, drafts pull requests for scoped bugs, and reviews its own diffs before they ship. One workflow file. No backend.
+
+**Live dashboard:** [maintainer.ugurlabs.com](https://maintainer.ugurlabs.com)
 
 ## What it does
 
-- **Triages new issues automatically** — classifies type, scores severity, finds duplicates, checks for missing repro steps, applies labels, posts a structured summary comment.
-- **Drafts fix pull requests** — for scoped, reproducible bugs, it reads the codebase, makes a minimal change, runs your tests, and opens a draft PR linked to the issue.
-- **Responds to commands** — `/maintainer fix`, `/maintainer triage`, `/maintainer skip`, plus free-form `@maintainer` mentions: "@maintainer this is a duplicate of #142, mark it".
+- **Triages every new issue** — Sonnet classifies type, severity, scope, reproducibility, finds duplicates, applies labels, and posts a structured summary comment.
+- **Drafts fix pull requests** — for scoped, reproducible bugs, the Fixer (Opus or Sonnet) reads the codebase, makes a minimal change, runs your tests, and opens a draft PR linked to the issue.
+- **Reviews its own diffs** — a Reviewer specialist grades the Fixer's output before the PR opens. Sloppy patches are sent back with concrete concerns instead of becoming PRs you have to triage.
+- **Responds to commands** — `/maintainer fix`, `/maintainer triage`, `/maintainer skip`, `/maintainer learn`, plus free-form `@maintainer` mentions: *"@maintainer this is a duplicate of #142, mark it"*.
 - **Closes stale issues politely** — configurable inactivity policy with warning comment before close.
+- **Streams telemetry to Supabase** — every run, every agent step, every cost. Powers the live dashboard with realtime updates.
 - **Aggregates a weekly briefing** — when installed in a control repo, generates `STATUS.md` with cross-repo KPIs and the issues that matter most this week.
 
 ## Quickstart
@@ -41,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ugurkocde/Maintainer@v1
+      - uses: ugurkocde/Maintainer@v2
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -148,7 +157,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ugurkocde/Maintainer@v1
+      - uses: ugurkocde/Maintainer@v2
         with:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
