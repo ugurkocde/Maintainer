@@ -9,6 +9,7 @@ import { handleComment } from './commands/router.js';
 import { runDashboard } from './dashboard/run.js';
 import { runStale } from './schedule/stale.js';
 import { runDigest } from './schedule/digest.js';
+import { syncPullRequests } from './schedule/sync_prs.js';
 import { parseIssuesEvent, parseIssueCommentEvent } from './util/events.js';
 import { log } from './util/log.js';
 import { ensureRepo, ensureIssue, startRun, finishRun, attachIssueToRun } from './db/ops.js';
@@ -178,6 +179,7 @@ async function run(): Promise<void> {
       }
       case 'schedule': {
         if (config.stale.enabled) await runStale({ client, config });
+        await syncPullRequests({ client });
         if (config.dashboard.enabled) {
           await runDashboard({ client, apiKey, config });
         } else {

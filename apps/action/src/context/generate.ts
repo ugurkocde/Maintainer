@@ -19,6 +19,8 @@ import {
 } from '../github/prs.js';
 import { repoOwner, repoName } from '../util/events.js';
 import { CONTEXT_FILE_PATH } from './path.js';
+import { recordAgentStep } from '../db/ops.js';
+import type { RunState } from '../index.js';
 import { log } from '../util/log.js';
 
 export async function runLearn(args: {
@@ -26,9 +28,11 @@ export async function runLearn(args: {
   apiKey: string;
   config: Config;
   issueNumber: number;
+  runState?: RunState;
 }): Promise<void> {
-  const { client, apiKey, config, issueNumber } = args;
+  const { client, apiKey, config, issueNumber, runState } = args;
   const start = Date.now();
+  const startedAt = new Date(start);
 
   const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
   try {
@@ -69,12 +73,37 @@ Generate the project-context document. Use the available tools to explore the re
   const footer = renderRunFooter(runMeta);
 
   let wrote = false;
+  let contextSize = 0;
   try {
     const stat = await fs.stat(join(workspace, CONTEXT_FILE_PATH));
     wrote = stat.size > 0;
+    contextSize = stat.size;
   } catch {
     wrote = false;
   }
+
+  const recordStep = async (
+    status: 'succeeded' | 'failed',
+    outputSummary: string,
+    metadata: Record<string, unknown> = {},
+  ) => {
+    if (!runState?.runId) return;
+    await recordAgentStep({
+      runId: runState.runId,
+      position: 0,
+      agent: 'learn',
+      model: config.fix.model,
+      status,
+      inputSummary: `Generate context for ${repoOwner()}/${repoName()}`,
+      outputSummary,
+      usage: budget.used(),
+      toolCalls: result.toolCalls,
+      steps: result.steps,
+      stopReason: result.stopReason,
+      metadata: { ...metadata, context_size: contextSize },
+      startedAt,
+    });
+  };
 
   if (!wrote) {
     await upsertStickyComment(
@@ -87,6 +116,7 @@ The agent did not produce a context file.
 
 ${result.finalText || 'No final summary available.'}${footer}`,
     );
+    await recordStep('failed', 'no context file produced');
     return;
   }
 
@@ -102,6 +132,7 @@ ${result.finalText || 'No final summary available.'}${footer}`,
 
 Generated the context file but pushing the branch failed. Check the Action logs.${footer}`,
     );
+    await recordStep('failed', 'context file produced but push failed', { branch: branchName });
     return;
   }
 
@@ -145,6 +176,10 @@ Generated the context file and pushed [\`${branchName}\`](${branchUrl}), but ope
 ${msg}
 \`\`\`${footer}`,
       );
+      await recordStep('failed', `context PR creation failed: ${msg.slice(0, 160)}`, {
+        branch: branchName,
+        error: msg,
+      });
       return;
     }
   }
@@ -163,6 +198,12 @@ ${msg}
 
 Project context drafted in [#${pr.number}](${pr.html_url}). Once merged, future fix and intent runs will load it automatically.${footer}`,
   );
+
+  await recordStep('succeeded', `context PR #${pr.number} (${(contextSize / 1024).toFixed(1)}KB)`, {
+    pr_number: pr.number,
+    pr_url: pr.html_url,
+    branch: branchName,
+  });
 }
 
 async function commitAndPush(ws: Workspace, branch: string, base: string): Promise<boolean> {

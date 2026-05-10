@@ -54950,7 +54950,7 @@ async function handleSlash(command, cmdArgs, ctx) {
             break;
         }
         case 'learn': {
-            await (0, generate_js_1.runLearn)({ client, apiKey, config, issueNumber: event.issue_number });
+            await (0, generate_js_1.runLearn)({ client, apiKey, config, issueNumber: event.issue_number, runState });
             if (runState)
                 runState.outcome = 'context_generated';
             break;
@@ -55142,10 +55142,12 @@ const tools_js_1 = __nccwpck_require__(9925);
 const prs_js_1 = __nccwpck_require__(7715);
 const events_js_1 = __nccwpck_require__(6390);
 const path_js_1 = __nccwpck_require__(3491);
+const ops_js_1 = __nccwpck_require__(5977);
 const log_js_1 = __nccwpck_require__(4097);
 async function runLearn(args) {
-    const { client, apiKey, config, issueNumber } = args;
+    const { client, apiKey, config, issueNumber, runState } = args;
     const start = Date.now();
+    const startedAt = new Date(start);
     const workspace = process.env.GITHUB_WORKSPACE ?? process.cwd();
     try {
         await fs_1.promises.access((0, path_1.join)(workspace, '.git'));
@@ -55177,19 +55179,41 @@ Generate the project-context document. Use the available tools to explore the re
     };
     const footer = (0, sticky_js_1.renderRunFooter)(runMeta);
     let wrote = false;
+    let contextSize = 0;
     try {
         const stat = await fs_1.promises.stat((0, path_1.join)(workspace, path_js_1.CONTEXT_FILE_PATH));
         wrote = stat.size > 0;
+        contextSize = stat.size;
     }
     catch {
         wrote = false;
     }
+    const recordStep = async (status, outputSummary, metadata = {}) => {
+        if (!runState?.runId)
+            return;
+        await (0, ops_js_1.recordAgentStep)({
+            runId: runState.runId,
+            position: 0,
+            agent: 'learn',
+            model: config.fix.model,
+            status,
+            inputSummary: `Generate context for ${(0, events_js_1.repoOwner)()}/${(0, events_js_1.repoName)()}`,
+            outputSummary,
+            usage: budget.used(),
+            toolCalls: result.toolCalls,
+            steps: result.steps,
+            stopReason: result.stopReason,
+            metadata: { ...metadata, context_size: contextSize },
+            startedAt,
+        });
+    };
     if (!wrote) {
         await (0, issues_js_1.upsertStickyComment)(client, issueNumber, 'intent', `### Maintainer learn
 
 The agent did not produce a context file.
 
 ${result.finalText || 'No final summary available.'}${footer}`);
+        await recordStep('failed', 'no context file produced');
         return;
     }
     const branchName = 'maintainer/learn';
@@ -55199,6 +55223,7 @@ ${result.finalText || 'No final summary available.'}${footer}`);
         await (0, issues_js_1.upsertStickyComment)(client, issueNumber, 'intent', `### Maintainer learn
 
 Generated the context file but pushing the branch failed. Check the Action logs.${footer}`);
+        await recordStep('failed', 'context file produced but push failed', { branch: branchName });
         return;
     }
     const prBody = `Adds \`${path_js_1.CONTEXT_FILE_PATH}\` so future Maintainer runs can skip the exploration phase and operate against the same shared understanding of the repository.
@@ -55238,6 +55263,10 @@ Generated the context file and pushed [\`${branchName}\`](${branchUrl}), but ope
 \`\`\`
 ${msg}
 \`\`\`${footer}`);
+            await recordStep('failed', `context PR creation failed: ${msg.slice(0, 160)}`, {
+                branch: branchName,
+                error: msg,
+            });
             return;
         }
     }
@@ -55250,6 +55279,11 @@ ${msg}
     await (0, issues_js_1.upsertStickyComment)(client, issueNumber, 'intent', `### Maintainer learn
 
 Project context drafted in [#${pr.number}](${pr.html_url}). Once merged, future fix and intent runs will load it automatically.${footer}`);
+    await recordStep('succeeded', `context PR #${pr.number} (${(contextSize / 1024).toFixed(1)}KB)`, {
+        pr_number: pr.number,
+        pr_url: pr.html_url,
+        branch: branchName,
+    });
 }
 async function commitAndPush(ws, branch, base) {
     const actor = process.env.GITHUB_ACTOR ?? 'github-actions[bot]';
@@ -56985,12 +57019,39 @@ const STOPWORDS = new Set([
     'github', 'issue', 'issues', 'error', 'errors', 'fail', 'fails', 'failed',
 ]);
 async function findCandidateDuplicates(client, issueNumber, title, body) {
+    // Two parallel searches:
+    // 1. Token-overlap query (precise, sometimes too narrow if title is generic).
+    // 2. Title-phrase OR-query against open issues (catches near-restatements
+    //    that the tokenize+stopword filter would discard).
+    // Plus the most-recently-updated open issues as a safety net so the LLM
+    // always has a candidate set to consider, even when both searches miss.
     const terms = Array.from(new Set([...tokenize(title), ...tokenize(body)]));
-    if (terms.length === 0)
-        return [];
-    const top = terms.slice(0, 5).join(' ');
-    const query = `is:issue ${top} -${issueNumber}`;
-    return searchIssues(client, query, 10);
+    const tokenQuery = terms.length > 0 ? `is:issue ${terms.slice(0, 5).join(' ')} -${issueNumber}` : '';
+    const titleWords = title
+        .replace(/[`*_~#>[\]()]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length > 3)
+        .slice(0, 6);
+    const titleQuery = titleWords.length > 0 ? `is:issue in:title ${titleWords.join(' OR ')} -${issueNumber}` : '';
+    const recentQuery = `is:issue is:open sort:updated-desc -${issueNumber}`;
+    const [tokenHits, titleHits, recentHits] = await Promise.all([
+        tokenQuery ? searchIssues(client, tokenQuery, 8) : Promise.resolve([]),
+        titleQuery ? searchIssues(client, titleQuery, 8) : Promise.resolve([]),
+        searchIssues(client, recentQuery, 5),
+    ]);
+    const seen = new Set([issueNumber]);
+    const merged = [];
+    for (const list of [tokenHits, titleHits, recentHits]) {
+        for (const hit of list) {
+            if (seen.has(hit.number))
+                continue;
+            seen.add(hit.number);
+            merged.push(hit);
+            if (merged.length >= 12)
+                return merged;
+        }
+    }
+    return merged;
 }
 
 
@@ -57046,6 +57107,7 @@ const router_js_1 = __nccwpck_require__(7904);
 const run_js_3 = __nccwpck_require__(1208);
 const stale_js_1 = __nccwpck_require__(723);
 const digest_js_1 = __nccwpck_require__(3824);
+const sync_prs_js_1 = __nccwpck_require__(5919);
 const events_js_1 = __nccwpck_require__(6390);
 const log_js_1 = __nccwpck_require__(4097);
 const ops_js_1 = __nccwpck_require__(5977);
@@ -57179,6 +57241,7 @@ async function run() {
             case 'schedule': {
                 if (config.stale.enabled)
                     await (0, stale_js_1.runStale)({ client, config });
+                await (0, sync_prs_js_1.syncPullRequests)({ client });
                 if (config.dashboard.enabled) {
                     await (0, run_js_3.runDashboard)({ client, apiKey, config });
                 }
@@ -57467,6 +57530,94 @@ async function runStale(args) {
 }
 async function unstaleOnActivity(client, config, issueNumber) {
     await (0, labels_js_1.removeLabel)(client, issueNumber, `${config.labels.prefix}${STALE_LABEL_SUFFIX}`);
+}
+
+
+/***/ }),
+
+/***/ 5919:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.syncPullRequests = syncPullRequests;
+const events_js_1 = __nccwpck_require__(6390);
+const client_js_1 = __nccwpck_require__(4882);
+const log_js_1 = __nccwpck_require__(4097);
+/**
+ * Reconciles pull_requests rows with their current GitHub state.
+ *
+ * The Action only writes a pull_requests row when it first creates the
+ * draft PR. Once a maintainer marks it ready, merges it, or closes it
+ * without merging, the database row goes stale unless we sync it back.
+ * This runs as part of the weekly schedule pass and updates state +
+ * merged + merged_at for every Maintainer-authored PR on the current
+ * repository. Cheap; one GitHub API call per open or recently-touched
+ * PR row.
+ */
+async function syncPullRequests(args) {
+    const { client } = args;
+    const supa = (0, client_js_1.db)();
+    if (!supa) {
+        log_js_1.log.info('Supabase not configured; skipping PR sync.');
+        return;
+    }
+    const owner = (0, events_js_1.repoOwner)();
+    const repo = (0, events_js_1.repoName)();
+    const { data: repoRow, error: repoErr } = await supa
+        .from('repos')
+        .select('id')
+        .eq('owner', owner)
+        .eq('name', repo)
+        .maybeSingle();
+    if (repoErr || !repoRow) {
+        log_js_1.log.info('Repo not yet recorded in Supabase; skipping PR sync.');
+        return;
+    }
+    // Reconcile every PR row whose state isn't already terminal merged.
+    // We don't try to be clever about which to refresh; the row count is
+    // tiny per repo (Maintainer drafts at most one PR per fixable issue).
+    const { data: rows, error } = await supa
+        .from('pull_requests')
+        .select('id, github_pr_number, state, merged')
+        .eq('repo_id', repoRow.id);
+    if (error || !rows || rows.length === 0)
+        return;
+    let updated = 0;
+    for (const row of rows) {
+        if (row.merged)
+            continue; // terminal
+        try {
+            const { data: pr } = await client.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: row.github_pr_number,
+            });
+            const nextState = pr.merged_at != null ? 'merged' : pr.state === 'closed' ? 'closed' : 'open';
+            const patch = {
+                state: nextState,
+                merged: pr.merged_at != null,
+                merged_at: pr.merged_at,
+                ready_for_review: !pr.draft,
+            };
+            const dirty = nextState !== row.state ||
+                Boolean(pr.merged_at) !== row.merged;
+            if (!dirty)
+                continue;
+            const { error: upErr } = await supa.from('pull_requests').update(patch).eq('id', row.id);
+            if (upErr) {
+                log_js_1.log.warn(`PR sync update failed for #${row.github_pr_number}: ${upErr.message}`);
+            }
+            else {
+                updated += 1;
+            }
+        }
+        catch (err) {
+            log_js_1.log.warn(`PR sync fetch failed for #${row.github_pr_number}: ${err.message}`);
+        }
+    }
+    log_js_1.log.info(`PR sync done. ${updated} row${updated === 1 ? '' : 's'} updated.`);
 }
 
 

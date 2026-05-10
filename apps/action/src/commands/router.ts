@@ -163,7 +163,7 @@ async function handleSlash(
       break;
     }
     case 'learn': {
-      await runLearn({ client, apiKey, config, issueNumber: event.issue_number });
+      await runLearn({ client, apiKey, config, issueNumber: event.issue_number, runState });
       if (runState) runState.outcome = 'context_generated';
       break;
     }

@@ -61,10 +61,39 @@ export async function findCandidateDuplicates(
   title: string,
   body: string,
 ): Promise<SearchHit[]> {
+  // Two parallel searches:
+  // 1. Token-overlap query (precise, sometimes too narrow if title is generic).
+  // 2. Title-phrase OR-query against open issues (catches near-restatements
+  //    that the tokenize+stopword filter would discard).
+  // Plus the most-recently-updated open issues as a safety net so the LLM
+  // always has a candidate set to consider, even when both searches miss.
   const terms = Array.from(new Set([...tokenize(title), ...tokenize(body)]));
-  if (terms.length === 0) return [];
 
-  const top = terms.slice(0, 5).join(' ');
-  const query = `is:issue ${top} -${issueNumber}`;
-  return searchIssues(client, query, 10);
+  const tokenQuery = terms.length > 0 ? `is:issue ${terms.slice(0, 5).join(' ')} -${issueNumber}` : '';
+  const titleWords = title
+    .replace(/[`*_~#>[\]()]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 3)
+    .slice(0, 6);
+  const titleQuery =
+    titleWords.length > 0 ? `is:issue in:title ${titleWords.join(' OR ')} -${issueNumber}` : '';
+  const recentQuery = `is:issue is:open sort:updated-desc -${issueNumber}`;
+
+  const [tokenHits, titleHits, recentHits] = await Promise.all([
+    tokenQuery ? searchIssues(client, tokenQuery, 8) : Promise.resolve([] as SearchHit[]),
+    titleQuery ? searchIssues(client, titleQuery, 8) : Promise.resolve([] as SearchHit[]),
+    searchIssues(client, recentQuery, 5),
+  ]);
+
+  const seen = new Set<number>([issueNumber]);
+  const merged: SearchHit[] = [];
+  for (const list of [tokenHits, titleHits, recentHits]) {
+    for (const hit of list) {
+      if (seen.has(hit.number)) continue;
+      seen.add(hit.number);
+      merged.push(hit);
+      if (merged.length >= 12) return merged;
+    }
+  }
+  return merged;
 }
