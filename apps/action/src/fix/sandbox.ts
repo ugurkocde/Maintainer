@@ -5,6 +5,12 @@ import { join, normalize, resolve, relative } from 'path';
 export class WorkspaceError extends Error {}
 
 export class Workspace {
+  // Paths the agent intentionally wrote to via the write_file tool.
+  // Side effects of read-only commands (npm install mutating the lockfile,
+  // build artifacts, etc.) do not appear here and so should not be staged
+  // or fed to the reviewer as part of the agent's intent.
+  public readonly writtenPaths = new Set<string>();
+
   constructor(public readonly root: string) {}
 
   resolveSafe(relativePath: string): string {
@@ -36,6 +42,11 @@ export class Workspace {
     const abs = this.resolveSafe(relativePath);
     await fs.mkdir(join(abs, '..'), { recursive: true });
     await fs.writeFile(abs, content, 'utf-8');
+    this.writtenPaths.add(this.normalize(relativePath));
+  }
+
+  private normalize(relativePath: string): string {
+    return relativePath.replace(/^\.\//, '').replace(/\\/g, '/');
   }
 
   async listDirectory(relativePath: string, maxEntries = 200): Promise<string[]> {

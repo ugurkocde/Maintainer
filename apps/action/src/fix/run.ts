@@ -159,6 +159,16 @@ Your job: implement a minimal correct fix and verify it with the test command ab
     });
     changed = await ws.listChangedFiles();
   }
+
+  // Scope to files the agent intentionally wrote via write_file. Side-effect
+  // mutations (npm install touching package-lock.json, build artifacts, etc.)
+  // appear in `git status` but never in writtenPaths, so they get filtered
+  // out before staging, the diff fed to the reviewer, and the PR.
+  if (ws.writtenPaths.size > 0) {
+    const intentional = ws.writtenPaths;
+    changed = changed.filter((f) => intentional.has(f));
+  }
+
   const runMeta: RunMetadata = {
     model: config.fix.model,
     usage: budget.used(),
@@ -221,9 +231,12 @@ ${(testOutput.stdout + '\n' + testOutput.stderr).slice(0, 8000)}
   // Reviewer pass: capture diff against the base, ask the reviewer to grade
   // the change, and bail before commit/push if it rejects (when configured to
   // block). This adds a second specialist agent to the timeline.
-  const diffResult = await ws.run('git', ['diff', `origin/${baseBranch}`, '--', '.'], {
-    timeoutMs: 30_000,
-  });
+  const diffPaths = changed.length > 0 ? changed : ['.'];
+  const diffResult = await ws.run(
+    'git',
+    ['diff', `origin/${baseBranch}`, '--', ...diffPaths],
+    { timeoutMs: 30_000 },
+  );
   const fullDiff = diffResult.code === 0 ? diffResult.stdout : '';
 
   const review: ReviewVerdict | null = await runReview({
@@ -266,7 +279,7 @@ Reviewer rejected the proposed change before opening a pull request: ${review.su
     return 'fix_failed';
   }
 
-  const pushed = await commitAndPush(ws, branchName, baseBranch, issueNumber);
+  const pushed = await commitAndPush(ws, branchName, baseBranch, issueNumber, changed);
   if (!pushed) {
     await upsertStickyComment(
       client,
@@ -417,15 +430,21 @@ async function commitAndPush(
   branch: string,
   base: string,
   issueNumber: number,
+  intentionalFiles: string[],
 ): Promise<boolean> {
   const actor = process.env.GITHUB_ACTOR ?? 'github-actions[bot]';
   const email = `${actor}@users.noreply.github.com`;
+
+  // Stage only the files the agent intentionally wrote. If we have no
+  // intentional list we fall back to -A; otherwise unrelated mutations
+  // (lockfiles, build outputs) are left out of the commit.
+  const addArgs = intentionalFiles.length > 0 ? ['add', ...intentionalFiles] : ['add', '-A'];
 
   const cmds: [string, string[]][] = [
     ['git', ['config', 'user.name', 'maintainer-bot']],
     ['git', ['config', 'user.email', email]],
     ['git', ['checkout', '-B', branch, base]],
-    ['git', ['add', '-A']],
+    ['git', addArgs],
     ['git', ['commit', '-m', `Fix issue #${issueNumber}`]],
     ['git', ['push', '-u', 'origin', branch, '--force-with-lease']],
   ];

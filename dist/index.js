@@ -54904,15 +54904,21 @@ async function handleSlash(command, cmdArgs, ctx) {
                 },
                 runState,
             });
+            if (runState)
+                runState.outcome = 'triage_only';
             break;
         }
         case 'fix': {
-            await (0, run_js_2.runFix)({ client, apiKey, config, issueNumber: event.issue_number, runState });
+            const result = await (0, run_js_2.runFix)({ client, apiKey, config, issueNumber: event.issue_number, runState });
+            if (runState && result)
+                runState.outcome = result;
             break;
         }
         case 'skip': {
             await (0, labels_js_1.addLabels)(client, event.issue_number, [config.skip_label]);
             await (0, issues_js_1.postComment)(client, event.issue_number, 'Maintainer will skip this issue. Remove the skip label to re-enable automation.');
+            if (runState)
+                runState.outcome = 'no_action';
             break;
         }
         case 'explain': {
@@ -54937,10 +54943,14 @@ async function handleSlash(command, cmdArgs, ctx) {
                 },
                 runState,
             });
+            if (runState)
+                runState.outcome = 'triage_only';
             break;
         }
         case 'learn': {
             await (0, generate_js_1.runLearn)({ client, apiKey, config, issueNumber: event.issue_number });
+            if (runState)
+                runState.outcome = 'context_generated';
             break;
         }
         case 'help': {
@@ -55978,6 +55988,14 @@ Your job: implement a minimal correct fix and verify it with the test command ab
         });
         changed = await ws.listChangedFiles();
     }
+    // Scope to files the agent intentionally wrote via write_file. Side-effect
+    // mutations (npm install touching package-lock.json, build artifacts, etc.)
+    // appear in `git status` but never in writtenPaths, so they get filtered
+    // out before staging, the diff fed to the reviewer, and the PR.
+    if (ws.writtenPaths.size > 0) {
+        const intentional = ws.writtenPaths;
+        changed = changed.filter((f) => intentional.has(f));
+    }
     const runMeta = {
         model: config.fix.model,
         usage: budget.used(),
@@ -56026,9 +56044,8 @@ ${(testOutput.stdout + '\n' + testOutput.stderr).slice(0, 8000)}
     // Reviewer pass: capture diff against the base, ask the reviewer to grade
     // the change, and bail before commit/push if it rejects (when configured to
     // block). This adds a second specialist agent to the timeline.
-    const diffResult = await ws.run('git', ['diff', `origin/${baseBranch}`, '--', '.'], {
-        timeoutMs: 30_000,
-    });
+    const diffPaths = changed.length > 0 ? changed : ['.'];
+    const diffResult = await ws.run('git', ['diff', `origin/${baseBranch}`, '--', ...diffPaths], { timeoutMs: 30_000 });
     const fullDiff = diffResult.code === 0 ? diffResult.stdout : '';
     const review = await (0, run_js_1.runReview)({
         ws,
@@ -56063,7 +56080,7 @@ Reviewer rejected the proposed change before opening a pull request: ${review.su
         await recordStep('failed', `reviewer rejected: ${review.summary.slice(0, 160)}`, { files_changed: changed, review }, { stopReason: result.stopReason, stepsCount: result.steps, toolCalls: result.toolCalls });
         return 'fix_failed';
     }
-    const pushed = await commitAndPush(ws, branchName, baseBranch, issueNumber);
+    const pushed = await commitAndPush(ws, branchName, baseBranch, issueNumber, changed);
     if (!pushed) {
         await (0, issues_js_1.upsertStickyComment)(client, issueNumber, 'fix', `### Maintainer fix attempt\n\nMade changes and tests passed, but pushing the fix branch failed. Check the Action logs.${footer}`);
         await recordStep('failed', 'push failed', { files_changed: changed, branch: branchName }, { stopReason: result.stopReason, stepsCount: result.steps, toolCalls: result.toolCalls });
@@ -56173,14 +56190,18 @@ async function runTests(ws, testCommand, timeoutMinutes) {
     const args = parts.slice(1);
     return ws.run(cmd, args, { timeoutMs: timeoutMinutes * 60_000 });
 }
-async function commitAndPush(ws, branch, base, issueNumber) {
+async function commitAndPush(ws, branch, base, issueNumber, intentionalFiles) {
     const actor = process.env.GITHUB_ACTOR ?? 'github-actions[bot]';
     const email = `${actor}@users.noreply.github.com`;
+    // Stage only the files the agent intentionally wrote. If we have no
+    // intentional list we fall back to -A; otherwise unrelated mutations
+    // (lockfiles, build outputs) are left out of the commit.
+    const addArgs = intentionalFiles.length > 0 ? ['add', ...intentionalFiles] : ['add', '-A'];
     const cmds = [
         ['git', ['config', 'user.name', 'maintainer-bot']],
         ['git', ['config', 'user.email', email]],
         ['git', ['checkout', '-B', branch, base]],
-        ['git', ['add', '-A']],
+        ['git', addArgs],
         ['git', ['commit', '-m', `Fix issue #${issueNumber}`]],
         ['git', ['push', '-u', 'origin', branch, '--force-with-lease']],
     ];
@@ -56246,6 +56267,11 @@ class WorkspaceError extends Error {
 exports.WorkspaceError = WorkspaceError;
 class Workspace {
     root;
+    // Paths the agent intentionally wrote to via the write_file tool.
+    // Side effects of read-only commands (npm install mutating the lockfile,
+    // build artifacts, etc.) do not appear here and so should not be staged
+    // or fed to the reviewer as part of the agent's intent.
+    writtenPaths = new Set();
     constructor(root) {
         this.root = root;
     }
@@ -56277,6 +56303,10 @@ class Workspace {
         const abs = this.resolveSafe(relativePath);
         await fs_1.promises.mkdir((0, path_1.join)(abs, '..'), { recursive: true });
         await fs_1.promises.writeFile(abs, content, 'utf-8');
+        this.writtenPaths.add(this.normalize(relativePath));
+    }
+    normalize(relativePath) {
+        return relativePath.replace(/^\.\//, '').replace(/\\/g, '/');
     }
     async listDirectory(relativePath, maxEntries = 200) {
         const abs = this.resolveSafe(relativePath);
@@ -57009,8 +57039,7 @@ const ops_js_1 = __nccwpck_require__(5977);
 const app_auth_js_1 = __nccwpck_require__(7718);
 async function run() {
     const startedAt = Date.now();
-    let runState = { runId: null, repoId: null, issueId: null, startedAt };
-    let outcome;
+    const runState = { runId: null, repoId: null, issueId: null, startedAt };
     let status = 'succeeded';
     try {
         const apiKey = core.getInput('anthropic-api-key', { required: true });
@@ -57073,27 +57102,27 @@ async function run() {
                 const evt = (0, events_js_1.parseIssuesEvent)(github_1.context.payload);
                 if (evt.is_pull_request) {
                     log_js_1.log.info('issues event on a pull request, skipping.');
-                    outcome = 'no_action';
+                    runState.outcome = 'no_action';
                     return;
                 }
                 if (evt.labels.includes(config.skip_label)) {
                     log_js_1.log.info(`Issue #${evt.issue_number} has skip label, ignoring.`);
-                    outcome = 'no_action';
+                    runState.outcome = 'no_action';
                     return;
                 }
                 if (mode === 'fix-only') {
                     log_js_1.log.info('mode=fix-only, skipping triage on issues event.');
-                    outcome = 'no_action';
+                    runState.outcome = 'no_action';
                     return;
                 }
                 if (!config.triage.enabled) {
                     log_js_1.log.info('Triage disabled in config.');
-                    outcome = 'no_action';
+                    runState.outcome = 'no_action';
                     return;
                 }
                 if (!['opened', 'reopened', 'edited'].includes(evt.action)) {
                     log_js_1.log.info(`Action "${evt.action}" not handled.`);
-                    outcome = 'no_action';
+                    runState.outcome = 'no_action';
                     return;
                 }
                 if (runState.repoId) {
@@ -57111,7 +57140,7 @@ async function run() {
                         await (0, ops_js_1.attachIssueToRun)(runState.runId, runState.issueId);
                 }
                 const verdict = await (0, run_js_1.runTriage)({ client, apiKey, config, event: evt, runState });
-                outcome = 'triage_only';
+                runState.outcome = 'triage_only';
                 if (verdict?.fixable &&
                     config.fix.enabled &&
                     config.fix.auto_attempt &&
@@ -57119,7 +57148,7 @@ async function run() {
                     mode !== 'triage-only') {
                     log_js_1.log.info(`Triage flagged issue #${evt.issue_number} as fixable; chaining to fix flow.`);
                     const fixResult = await (0, run_js_2.runFix)({ client, apiKey, config, issueNumber: evt.issue_number, runState });
-                    outcome = fixResult ?? 'fix_failed';
+                    runState.outcome = fixResult ?? 'fix_failed';
                 }
                 break;
             }
@@ -57167,7 +57196,7 @@ async function run() {
         await (0, ops_js_1.finishRun)({
             runId: runState.runId,
             status,
-            outcome,
+            outcome: runState.outcome,
             totalRuntimeMs: Date.now() - startedAt,
         });
     }

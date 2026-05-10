@@ -119,10 +119,12 @@ async function handleSlash(
         },
         runState,
       });
+      if (runState) runState.outcome = 'triage_only';
       break;
     }
     case 'fix': {
-      await runFix({ client, apiKey, config, issueNumber: event.issue_number, runState });
+      const result = await runFix({ client, apiKey, config, issueNumber: event.issue_number, runState });
+      if (runState && result) runState.outcome = result;
       break;
     }
     case 'skip': {
@@ -132,6 +134,7 @@ async function handleSlash(
         event.issue_number,
         'Maintainer will skip this issue. Remove the skip label to re-enable automation.',
       );
+      if (runState) runState.outcome = 'no_action';
       break;
     }
     case 'explain': {
@@ -156,10 +159,12 @@ async function handleSlash(
         },
         runState,
       });
+      if (runState) runState.outcome = 'triage_only';
       break;
     }
     case 'learn': {
       await runLearn({ client, apiKey, config, issueNumber: event.issue_number });
+      if (runState) runState.outcome = 'context_generated';
       break;
     }
     case 'help': {

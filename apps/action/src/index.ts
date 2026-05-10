@@ -16,17 +16,29 @@ import { mintInstallationToken } from './github/app-auth.js';
 
 type Mode = 'auto' | 'dashboard' | 'triage-only' | 'fix-only';
 
+export type RunOutcome =
+  | 'triage_only'
+  | 'fix_proposed'
+  | 'fix_failed'
+  | 'no_action'
+  | 'duplicate'
+  | 'context_generated';
+
 export type RunState = {
   runId: string | null;
   repoId: string | null;
   issueId: string | null;
   startedAt: number;
+  // Final outcome of this run. Handlers (triage, fix, intent, learn,
+  // slash commands) write here; the finally block in run() reads it
+  // when calling finishRun. When unset, finishRun records a null
+  // outcome which is fine for events that did no work.
+  outcome?: RunOutcome;
 };
 
 async function run(): Promise<void> {
   const startedAt = Date.now();
-  let runState: RunState = { runId: null, repoId: null, issueId: null, startedAt };
-  let outcome: Parameters<typeof finishRun>[0]['outcome'];
+  const runState: RunState = { runId: null, repoId: null, issueId: null, startedAt };
   let status: Parameters<typeof finishRun>[0]['status'] = 'succeeded';
 
   try {
@@ -101,27 +113,27 @@ async function run(): Promise<void> {
         const evt = parseIssuesEvent(context.payload as Record<string, unknown>);
         if (evt.is_pull_request) {
           log.info('issues event on a pull request, skipping.');
-          outcome = 'no_action';
+          runState.outcome = 'no_action';
           return;
         }
         if (evt.labels.includes(config.skip_label)) {
           log.info(`Issue #${evt.issue_number} has skip label, ignoring.`);
-          outcome = 'no_action';
+          runState.outcome = 'no_action';
           return;
         }
         if (mode === 'fix-only') {
           log.info('mode=fix-only, skipping triage on issues event.');
-          outcome = 'no_action';
+          runState.outcome = 'no_action';
           return;
         }
         if (!config.triage.enabled) {
           log.info('Triage disabled in config.');
-          outcome = 'no_action';
+          runState.outcome = 'no_action';
           return;
         }
         if (!['opened', 'reopened', 'edited'].includes(evt.action)) {
           log.info(`Action "${evt.action}" not handled.`);
-          outcome = 'no_action';
+          runState.outcome = 'no_action';
           return;
         }
 
@@ -140,7 +152,7 @@ async function run(): Promise<void> {
         }
 
         const verdict = await runTriage({ client, apiKey, config, event: evt, runState });
-        outcome = 'triage_only';
+        runState.outcome = 'triage_only';
         if (
           verdict?.fixable &&
           config.fix.enabled &&
@@ -150,7 +162,7 @@ async function run(): Promise<void> {
         ) {
           log.info(`Triage flagged issue #${evt.issue_number} as fixable; chaining to fix flow.`);
           const fixResult = await runFix({ client, apiKey, config, issueNumber: evt.issue_number, runState });
-          outcome = fixResult ?? 'fix_failed';
+          runState.outcome = fixResult ?? 'fix_failed';
         }
         break;
       }
@@ -194,7 +206,7 @@ async function run(): Promise<void> {
     await finishRun({
       runId: runState.runId,
       status,
-      outcome,
+      outcome: runState.outcome,
       totalRuntimeMs: Date.now() - startedAt,
     });
   }
