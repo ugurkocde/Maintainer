@@ -26,6 +26,7 @@ import { loadProjectContext } from '../context/load.js';
 import { CONTEXT_FILE_PATH } from '../context/path.js';
 import { recordAgentStep, recordPullRequest, attachPrToRun } from '../db/ops.js';
 import type { RunState } from '../index.js';
+import { runReview, renderReviewBlock, type ReviewVerdict } from '../review/run.js';
 import { log } from '../util/log.js';
 
 export type FixOutcome = 'fix_proposed' | 'fix_failed' | 'no_action';
@@ -217,6 +218,54 @@ ${(testOutput.stdout + '\n' + testOutput.stderr).slice(0, 8000)}
     return 'fix_failed';
   }
 
+  // Reviewer pass: capture diff against the base, ask the reviewer to grade
+  // the change, and bail before commit/push if it rejects (when configured to
+  // block). This adds a second specialist agent to the timeline.
+  const diffResult = await ws.run('git', ['diff', `origin/${baseBranch}`, '--', '.'], {
+    timeoutMs: 30_000,
+  });
+  const fullDiff = diffResult.code === 0 ? diffResult.stdout : '';
+
+  const review: ReviewVerdict | null = await runReview({
+    ws,
+    apiKey,
+    config,
+    issueNumber: issue.number,
+    issueTitle: issue.title,
+    issueBody: issue.body,
+    diff: fullDiff,
+    files: changed,
+    testCommand,
+    testOutput: testOutput ? `${testOutput.stdout}\n${testOutput.stderr}` : undefined,
+    fixerSummary: result.finalText,
+    language: project.language,
+    runState,
+    position: 2,
+  });
+
+  if (review && !review.approved && config.review.block_on_reject) {
+    const concerns = review.concerns.length
+      ? '\n\n**Reviewer concerns:**\n' + review.concerns.map((c) => `- ${c}`).join('\n')
+      : '';
+    const sticky = `### Maintainer fix attempt
+
+Reviewer rejected the proposed change before opening a pull request: ${review.summary}${concerns}
+
+**Files changed:** ${changed.join(', ')}
+
+**Agent summary:** ${result.finalText || '(none)'}${footer}`;
+    await upsertStickyComment(client, issueNumber, 'fix', sticky);
+    await addLabels(client, issueNumber, [`${config.labels.prefix}fix-failed`]);
+    await ws.run('git', ['restore', '--staged', '--worktree', '.']);
+    await recordStep(
+      'failed',
+      `reviewer rejected: ${review.summary.slice(0, 160)}`,
+      { files_changed: changed, review },
+      { stopReason: result.stopReason, stepsCount: result.steps, toolCalls: result.toolCalls },
+    );
+    return 'fix_failed';
+  }
+
   const pushed = await commitAndPush(ws, branchName, baseBranch, issueNumber);
   if (!pushed) {
     await upsertStickyComment(
@@ -234,7 +283,16 @@ ${(testOutput.stdout + '\n' + testOutput.stderr).slice(0, 8000)}
     return 'fix_failed';
   }
 
-  const prBody = renderPrBody(issue.number, result.finalText, changed, testCommand, testOutput?.stdout ?? '', runMeta);
+  const reviewBlock = review ? `\n\n${renderReviewBlock(review)}\n` : '';
+  const prBody = renderPrBody(
+    issue.number,
+    result.finalText,
+    changed,
+    testCommand,
+    testOutput?.stdout ?? '',
+    runMeta,
+    reviewBlock,
+  );
   const branchUrl = `https://github.com/${repoOwner()}/${repoName()}/tree/${branchName}`;
   const compareUrl = `https://github.com/${repoOwner()}/${repoName()}/compare/${baseBranch}...${branchName}`;
 
@@ -388,6 +446,7 @@ function renderPrBody(
   testCommand: string | undefined,
   testOut: string,
   runMeta: RunMetadata,
+  reviewBlock: string,
 ): string {
   const summary = agentSummary.trim() || '(no summary provided)';
   const runDetails = renderRunDetailsBlock(runMeta);
@@ -414,7 +473,7 @@ ${testOut.slice(0, 6000)}
 </details>
 
 ${runDetails}
-
+${reviewBlock}
 ---
 
 This pull request was drafted by Maintainer. It is intentionally opened as a draft and labeled \`maintainer:needs-human-review\`. Review the diff, the reasoning, and the test output before marking ready.`;

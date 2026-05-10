@@ -54371,7 +54371,7 @@ async function callStructured(opts) {
 "use strict";
 
 Object.defineProperty(exports, "__esModule", ({ value: true }));
-exports.EXPLAIN_PROMPT = exports.LEARN_PROMPT = exports.FIX_PROMPT = exports.INTENT_PROMPT = exports.TRIAGE_PROMPT = void 0;
+exports.EXPLAIN_PROMPT = exports.REVIEWER_PROMPT = exports.LEARN_PROMPT = exports.FIX_PROMPT = exports.INTENT_PROMPT = exports.TRIAGE_PROMPT = void 0;
 exports.TRIAGE_PROMPT = `You are Maintainer, an automation assistant that triages issues for an open-source repository.
 
 Your job for each new issue:
@@ -54484,6 +54484,42 @@ Rules:
 - After writing the document, use write_file to save it to .github/maintainer-context.md.
 - End your turn with a one-line confirmation in plain text once the file is written.
 - No emojis. No marketing voice.`;
+exports.REVIEWER_PROMPT = `You are Maintainer Reviewer, a code-review specialist.
+
+A previous Fixer agent produced a diff for an issue. Review the diff BEFORE it becomes a draft pull request and decide whether it ships or gets sent back.
+
+You will be given:
+- The original issue body
+- The unified diff
+- The list of files changed
+- The Fixer agent's reasoning summary
+- The detected project's language and (optionally) test command
+
+Approve only when ALL of these hold:
+- The change is the minimum needed to address the reported bug.
+- It does not regress unrelated functionality or expand scope.
+- It uses idiomatic patterns for the project's language and style.
+- Comments are justified (explain WHY when non-obvious; never explain WHAT).
+- No obvious correctness bugs (null/empty handling, off-by-one, races).
+- No new dependencies are introduced unless the issue genuinely required one.
+
+Reject when any of these hold:
+- The diff is broader than necessary or refactors unrelated code.
+- It introduces dead code, unused imports, or commented-out blocks.
+- It adds prose comments that narrate what the code does line by line.
+- It hardcodes values that should remain configurable.
+- It silently swallows errors that should bubble up.
+- The fix does not actually address the bug as reported.
+
+Use the read_file and grep tools sparingly when you need surrounding context the diff alone doesn't show. Do not over-explore; the diff is your primary input.
+
+Output via the review_verdict tool:
+- approved: boolean
+- summary: one-sentence overall verdict
+- concerns: array of specific, actionable concern strings; empty when approved
+- suggestions: array of optional improvement strings; empty when there are none
+
+Tone: direct, professional, no hedging. No emojis. Never reference being an AI or naming a specific model.`;
 exports.EXPLAIN_PROMPT = `You are Maintainer, an automation assistant.
 
 A maintainer has asked you to explain an issue in plain language. Rewrite the issue body so a non-technical reader can understand what is being reported, what was expected, and what actually happens. Keep it short, neutral, and accurate. Do not add information that is not in the original report. No emojis. No filler.`;
@@ -55035,6 +55071,15 @@ exports.ConfigSchema = zod_1.z
         enabled: zod_1.z.boolean().default(true),
         require_write_permission: zod_1.z.boolean().default(true),
         intent_model: zod_1.z.string().default('claude-sonnet-4-6'),
+    })
+        .default({}),
+    review: zod_1.z
+        .object({
+        enabled: zod_1.z.boolean().default(true),
+        model: zod_1.z.string().default('claude-sonnet-4-6'),
+        max_input_tokens: zod_1.z.number().int().positive().default(120_000),
+        max_output_tokens: zod_1.z.number().int().positive().default(2_000),
+        block_on_reject: zod_1.z.boolean().default(true),
     })
         .default({}),
     dashboard: zod_1.z
@@ -55832,6 +55877,7 @@ const events_js_1 = __nccwpck_require__(6390);
 const load_js_1 = __nccwpck_require__(5300);
 const path_js_1 = __nccwpck_require__(3491);
 const ops_js_1 = __nccwpck_require__(5977);
+const run_js_1 = __nccwpck_require__(218);
 const log_js_1 = __nccwpck_require__(4097);
 async function runFix(args) {
     const { client, apiKey, config, issueNumber, runState } = args;
@@ -55977,13 +56023,54 @@ ${(testOutput.stdout + '\n' + testOutput.stderr).slice(0, 8000)}
         await recordStep('failed', `tests failed: exit ${testOutput.code}`, { files_changed: changed, test_command: testCommand, test_exit: testOutput.code }, { stopReason: result.stopReason, stepsCount: result.steps, toolCalls: result.toolCalls });
         return 'fix_failed';
     }
+    // Reviewer pass: capture diff against the base, ask the reviewer to grade
+    // the change, and bail before commit/push if it rejects (when configured to
+    // block). This adds a second specialist agent to the timeline.
+    const diffResult = await ws.run('git', ['diff', `origin/${baseBranch}`, '--', '.'], {
+        timeoutMs: 30_000,
+    });
+    const fullDiff = diffResult.code === 0 ? diffResult.stdout : '';
+    const review = await (0, run_js_1.runReview)({
+        ws,
+        apiKey,
+        config,
+        issueNumber: issue.number,
+        issueTitle: issue.title,
+        issueBody: issue.body,
+        diff: fullDiff,
+        files: changed,
+        testCommand,
+        testOutput: testOutput ? `${testOutput.stdout}\n${testOutput.stderr}` : undefined,
+        fixerSummary: result.finalText,
+        language: project.language,
+        runState,
+        position: 2,
+    });
+    if (review && !review.approved && config.review.block_on_reject) {
+        const concerns = review.concerns.length
+            ? '\n\n**Reviewer concerns:**\n' + review.concerns.map((c) => `- ${c}`).join('\n')
+            : '';
+        const sticky = `### Maintainer fix attempt
+
+Reviewer rejected the proposed change before opening a pull request: ${review.summary}${concerns}
+
+**Files changed:** ${changed.join(', ')}
+
+**Agent summary:** ${result.finalText || '(none)'}${footer}`;
+        await (0, issues_js_1.upsertStickyComment)(client, issueNumber, 'fix', sticky);
+        await (0, labels_js_1.addLabels)(client, issueNumber, [`${config.labels.prefix}fix-failed`]);
+        await ws.run('git', ['restore', '--staged', '--worktree', '.']);
+        await recordStep('failed', `reviewer rejected: ${review.summary.slice(0, 160)}`, { files_changed: changed, review }, { stopReason: result.stopReason, stepsCount: result.steps, toolCalls: result.toolCalls });
+        return 'fix_failed';
+    }
     const pushed = await commitAndPush(ws, branchName, baseBranch, issueNumber);
     if (!pushed) {
         await (0, issues_js_1.upsertStickyComment)(client, issueNumber, 'fix', `### Maintainer fix attempt\n\nMade changes and tests passed, but pushing the fix branch failed. Check the Action logs.${footer}`);
         await recordStep('failed', 'push failed', { files_changed: changed, branch: branchName }, { stopReason: result.stopReason, stepsCount: result.steps, toolCalls: result.toolCalls });
         return 'fix_failed';
     }
-    const prBody = renderPrBody(issue.number, result.finalText, changed, testCommand, testOutput?.stdout ?? '', runMeta);
+    const reviewBlock = review ? `\n\n${(0, run_js_1.renderReviewBlock)(review)}\n` : '';
+    const prBody = renderPrBody(issue.number, result.finalText, changed, testCommand, testOutput?.stdout ?? '', runMeta, reviewBlock);
     const branchUrl = `https://github.com/${(0, events_js_1.repoOwner)()}/${(0, events_js_1.repoName)()}/tree/${branchName}`;
     const compareUrl = `https://github.com/${(0, events_js_1.repoOwner)()}/${(0, events_js_1.repoName)()}/compare/${baseBranch}...${branchName}`;
     const existing = await (0, prs_js_1.findOpenPullRequestForBranch)(client, branchName);
@@ -56106,7 +56193,7 @@ async function commitAndPush(ws, branch, base, issueNumber) {
     }
     return true;
 }
-function renderPrBody(issueNumber, agentSummary, files, testCommand, testOut, runMeta) {
+function renderPrBody(issueNumber, agentSummary, files, testCommand, testOut, runMeta, reviewBlock) {
     const summary = agentSummary.trim() || '(no summary provided)';
     const runDetails = (0, sticky_js_1.renderRunDetailsBlock)(runMeta);
     return `Fixes #${issueNumber}
@@ -56132,7 +56219,7 @@ ${testOut.slice(0, 6000)}
 </details>
 
 ${runDetails}
-
+${reviewBlock}
 ---
 
 This pull request was drafted by Maintainer. It is intentionally opened as a draft and labeled \`maintainer:needs-human-review\`. Review the diff, the reasoning, and the test output before marking ready.`;
@@ -57086,6 +57173,157 @@ async function run() {
     }
 }
 void run();
+
+
+/***/ }),
+
+/***/ 218:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.runReview = runReview;
+exports.renderReviewBlock = renderReviewBlock;
+exports.reviewerTools = reviewerTools;
+const client_js_1 = __nccwpck_require__(2757);
+const prompts_js_1 = __nccwpck_require__(175);
+const loop_js_1 = __nccwpck_require__(3752);
+const budget_js_1 = __nccwpck_require__(8274);
+const tools_js_1 = __nccwpck_require__(9925);
+const ops_js_1 = __nccwpck_require__(5977);
+const log_js_1 = __nccwpck_require__(4097);
+const REVIEW_TOOL_SCHEMA = {
+    type: 'object',
+    properties: {
+        approved: {
+            type: 'boolean',
+            description: 'True only if the diff meets all approval criteria. False if any reject criterion is met.',
+        },
+        summary: {
+            type: 'string',
+            description: 'One-sentence overall verdict.',
+        },
+        concerns: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Specific actionable concerns when not approved. Empty array when approved. Each entry is a single concrete issue.',
+        },
+        suggestions: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional improvements that would not block merge. Empty when none.',
+        },
+    },
+    required: ['approved', 'summary', 'concerns', 'suggestions'],
+};
+async function runReview(args) {
+    const { apiKey, config, issueNumber, issueTitle, issueBody, diff, files, testCommand, testOutput, fixerSummary, language, runState, position, } = args;
+    if (!config.review.enabled) {
+        log_js_1.log.info('Reviewer disabled in config; approving by default.');
+        return null;
+    }
+    const start = Date.now();
+    const startedAt = new Date(start);
+    const budget = new budget_js_1.TokenBudget(config.review.max_input_tokens, config.review.max_output_tokens);
+    const truncatedDiff = diff.length > 60_000
+        ? diff.slice(0, 60_000) + `\n\n[diff truncated; original was ${diff.length} bytes]`
+        : diff;
+    const truncatedTestOutput = testOutput && testOutput.length > 6_000 ? testOutput.slice(0, 6_000) + '\n[truncated]' : testOutput;
+    const userPrompt = `Issue #${issueNumber}: ${issueTitle}
+
+Issue body:
+"""
+${issueBody || '(empty)'}
+"""
+
+Project language: ${language ?? 'unknown'}
+Test command: ${testCommand ?? 'none configured'}
+Files changed: ${files.join(', ')}
+
+Fixer agent's reasoning summary:
+"""
+${fixerSummary || '(none)'}
+"""
+
+${truncatedTestOutput ? `Test output (truncated):\n\`\`\`\n${truncatedTestOutput}\n\`\`\`\n\n` : ''}Unified diff:
+\`\`\`diff
+${truncatedDiff}
+\`\`\`
+
+Decide. Use the review_verdict tool.`;
+    let verdict;
+    try {
+        const result = await (0, loop_js_1.callStructured)({
+            client: (0, client_js_1.anthropic)(apiKey),
+            model: config.review.model,
+            systemPrompt: prompts_js_1.REVIEWER_PROMPT,
+            userPrompt,
+            schemaName: 'review_verdict',
+            schemaDescription: 'Final review verdict on the proposed diff.',
+            inputSchema: REVIEW_TOOL_SCHEMA,
+            budget,
+            maxTokens: 2048,
+        });
+        verdict = result.value;
+    }
+    catch (err) {
+        log_js_1.log.error(`Review failed: ${err.message}`);
+        if (runState?.runId) {
+            await (0, ops_js_1.recordAgentStep)({
+                runId: runState.runId,
+                position,
+                agent: 'reviewer',
+                model: config.review.model,
+                status: 'failed',
+                usage: budget.used(),
+                startedAt,
+                stopReason: 'api_error',
+            });
+        }
+        // Default to approve when the reviewer itself errors. The fixer's
+        // change already passed tests; better to ship and let humans review
+        // than to block on infrastructure flakiness.
+        return null;
+    }
+    if (runState?.runId) {
+        await (0, ops_js_1.recordAgentStep)({
+            runId: runState.runId,
+            position,
+            agent: 'reviewer',
+            model: config.review.model,
+            status: 'succeeded',
+            inputSummary: `${files.length} file${files.length === 1 ? '' : 's'} for #${issueNumber}`,
+            outputSummary: `${verdict.approved ? 'approved' : 'rejected'}: ${verdict.summary.slice(0, 200)}`,
+            usage: budget.used(),
+            stopReason: 'end_turn',
+            metadata: { verdict, files },
+            startedAt,
+        });
+    }
+    log_js_1.log.info(`Review verdict: ${verdict.approved ? 'approved' : 'rejected'}; ${verdict.concerns.length} concern${verdict.concerns.length === 1 ? '' : 's'}.`);
+    return verdict;
+}
+function renderReviewBlock(verdict) {
+    const lines = ['## Reviewer verdict', '', `**${verdict.approved ? 'Approved' : 'Rejected'}** — ${verdict.summary}`];
+    if (verdict.concerns.length > 0) {
+        lines.push('', '### Concerns');
+        for (const c of verdict.concerns)
+            lines.push(`- ${c}`);
+    }
+    if (verdict.suggestions.length > 0) {
+        lines.push('', '### Suggestions');
+        for (const s of verdict.suggestions)
+            lines.push(`- ${s}`);
+    }
+    return lines.join('\n');
+}
+// Optional: expose workspace tools to the reviewer when we want it to read
+// surrounding context. Currently unused (review is diff-only) but kept here
+// so the agent loop variant is a one-line swap if we add it later.
+function reviewerTools(ws) {
+    return (0, tools_js_1.workspaceTools)(ws);
+}
 
 
 /***/ }),

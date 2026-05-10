@@ -29,6 +29,15 @@ export const ConfigSchema = z
         intent_model: z.string().default('claude-sonnet-4-6'),
       })
       .default({}),
+    review: z
+      .object({
+        enabled: z.boolean().default(true),
+        model: z.string().default('claude-sonnet-4-6'),
+        max_input_tokens: z.number().int().positive().default(120_000),
+        max_output_tokens: z.number().int().positive().default(2_000),
+        block_on_reject: z.boolean().default(true),
+      })
+      .default({}),
     dashboard: z
       .object({
         enabled: z.boolean().default(false),
