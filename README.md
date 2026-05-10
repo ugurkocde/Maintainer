@@ -60,6 +60,12 @@ jobs:
 
 The first run creates the standard label set (`maintainer:bug`, `maintainer:needs-repro`, etc.) and confirms the install. Open a new issue and watch the triage comment appear within a minute.
 
+### 4. Generate the project context (recommended)
+
+After the first triage run, comment `/maintainer learn` on any open issue. The agent reads the repo end-to-end and opens a draft PR adding `.github/maintainer-context.md` — the project's overview, stack, key files, conventions, **and crucially every existing GitHub Actions workflow with its triggers and slash commands**. Future fix and intent runs read this file at startup and prefer invoking your existing automations over recreating them. Roughly $1–4 in API spend, paid once per repo. Re-run `/maintainer learn` after major refactors.
+
+Skipping this step is fine for small repos but on a project with existing automation (e.g. an `/approve` slash-command workflow) the context file prevents Maintainer from racing or duplicating the work your other workflows already do.
+
 ## Commands
 
 Comments by users with write access to the repository can invoke Maintainer:
