@@ -4,14 +4,36 @@ import { GeistMono } from 'geist/font/mono';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'Maintainer · Live OSS automation',
+  metadataBase: new URL('https://maintainer.ugurlabs.com'),
+  title: {
+    default: 'Maintainer · Live OSS automation',
+    template: '%s · Maintainer',
+  },
   description:
     'Maintainer is a fleet of AI agents that triages issues, drafts pull requests, and keeps open-source repositories healthy. Watch it work in real time.',
+  applicationName: 'Maintainer',
+  keywords: [
+    'open source maintenance',
+    'AI agents',
+    'GitHub Action',
+    'issue triage',
+    'pull request automation',
+    'developer experience',
+  ],
+  authors: [{ name: 'ugurlabs', url: 'https://ugurlabs.com' }],
   openGraph: {
     title: 'Maintainer · Live OSS automation',
     description:
       'A fleet of AI agents that triages issues and drafts pull requests for open-source repositories. Live.',
     type: 'website',
+    url: 'https://maintainer.ugurlabs.com',
+    siteName: 'Maintainer',
+  },
+  twitter: {
+    card: 'summary_large_image',
+    title: 'Maintainer · Live OSS automation',
+    description:
+      'A fleet of AI agents that triages issues and drafts pull requests for open-source repositories. Live.',
   },
 };
 

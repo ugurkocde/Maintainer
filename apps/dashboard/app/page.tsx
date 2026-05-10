@@ -1,12 +1,14 @@
 import Link from 'next/link';
 import {
   getTotals,
+  getSpendByDay,
   listRecentActivity,
   listReposWithStats,
   type RepoStats,
 } from '@/lib/db';
 import { ActivityFeed } from '@/app/components/ActivityFeed';
 import { LiveTotals } from '@/app/components/LiveTotals';
+import { SpendChart } from '@/app/components/SpendChart';
 import { formatCost, formatRelativeTime } from '@/lib/format';
 import type { ActivityEntry } from '@/lib/use-realtime';
 
@@ -14,12 +16,13 @@ export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export default async function HomePage() {
-  let totals, activity, repos;
+  let totals, activity, repos, spend;
   try {
-    [totals, activity, repos] = await Promise.all([
+    [totals, activity, repos, spend] = await Promise.all([
       getTotals(),
       listRecentActivity(30),
       listReposWithStats(),
+      getSpendByDay(14),
     ]);
   } catch (err) {
     return (
@@ -47,6 +50,8 @@ export default async function HomePage() {
     <div className="space-y-12">
       <Hero />
       <LiveTotals initial={totals} />
+
+      <SpendChart days={spend} />
 
       <section className="grid grid-cols-1 lg:grid-cols-5 gap-6">
         <div className="lg:col-span-3 space-y-3">
