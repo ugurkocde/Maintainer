@@ -56979,6 +56979,7 @@ exports.searchIssues = searchIssues;
 exports.tokenize = tokenize;
 exports.findCandidateDuplicates = findCandidateDuplicates;
 const events_js_1 = __nccwpck_require__(6390);
+const log_js_1 = __nccwpck_require__(4097);
 async function searchIssues(client, query, limit = 10) {
     const owner = (0, events_js_1.repoOwner)();
     const repo = (0, events_js_1.repoName)();
@@ -56999,7 +57000,12 @@ async function searchIssues(client, query, limit = 10) {
             body_excerpt: (it.body ?? '').slice(0, 280),
         }));
     }
-    catch {
+    catch (err) {
+        // Surface failures so quota exhaustion (search has a stricter
+        // secondary rate limit, 30/min authenticated) is visible in the
+        // Action log. Returning [] silently means dedup goes blind under
+        // load and every issue looks unique.
+        log_js_1.log.warn(`searchIssues failed for "${fullQuery.slice(0, 80)}": ${err.message}`);
         return [];
     }
 }
@@ -57575,19 +57581,21 @@ async function syncPullRequests(args) {
         log_js_1.log.info('Repo not yet recorded in Supabase; skipping PR sync.');
         return;
     }
-    // Reconcile every PR row whose state isn't already terminal merged.
-    // We don't try to be clever about which to refresh; the row count is
-    // tiny per repo (Maintainer drafts at most one PR per fixable issue).
+    // Reconcile non-terminal PRs only; merged rows never change again.
+    // Filter at the DB level (not in memory) so an aged repo with many
+    // historical merged PRs doesn't trigger one GitHub API call per
+    // merged row. Cap at 50 in-flight rows per schedule pass to stay
+    // far below GitHub's secondary rate limit even on busy repos.
     const { data: rows, error } = await supa
         .from('pull_requests')
         .select('id, github_pr_number, state, merged')
-        .eq('repo_id', repoRow.id);
+        .eq('repo_id', repoRow.id)
+        .eq('merged', false)
+        .limit(50);
     if (error || !rows || rows.length === 0)
         return;
     let updated = 0;
     for (const row of rows) {
-        if (row.merged)
-            continue; // terminal
         try {
             const { data: pr } = await client.rest.pulls.get({
                 owner,

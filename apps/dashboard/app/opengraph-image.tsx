@@ -1,6 +1,9 @@
 import { ImageResponse } from 'next/og';
 
-export const runtime = 'nodejs';
+// next/og's ImageResponse is built for the Edge runtime; using nodejs adds
+// cold-start latency for what is essentially a pure render and gives no
+// upside.
+export const runtime = 'edge';
 export const alt = 'Maintainer · Live OSS automation';
 export const size = { width: 1200, height: 630 };
 export const contentType = 'image/png';

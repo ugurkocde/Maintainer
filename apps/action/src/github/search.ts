@@ -1,5 +1,6 @@
 import type { Octokit } from './client.js';
 import { repoOwner, repoName } from '../util/events.js';
+import { log } from '../util/log.js';
 
 export type SearchHit = {
   number: number;
@@ -33,7 +34,12 @@ export async function searchIssues(
       url: it.html_url,
       body_excerpt: (it.body ?? '').slice(0, 280),
     }));
-  } catch {
+  } catch (err) {
+    // Surface failures so quota exhaustion (search has a stricter
+    // secondary rate limit, 30/min authenticated) is visible in the
+    // Action log. Returning [] silently means dedup goes blind under
+    // load and every issue looks unique.
+    log.warn(`searchIssues failed for "${fullQuery.slice(0, 80)}": ${(err as Error).message}`);
     return [];
   }
 }

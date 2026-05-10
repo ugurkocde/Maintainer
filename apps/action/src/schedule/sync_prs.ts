@@ -36,18 +36,21 @@ export async function syncPullRequests(args: { client: Octokit }): Promise<void>
     return;
   }
 
-  // Reconcile every PR row whose state isn't already terminal merged.
-  // We don't try to be clever about which to refresh; the row count is
-  // tiny per repo (Maintainer drafts at most one PR per fixable issue).
+  // Reconcile non-terminal PRs only; merged rows never change again.
+  // Filter at the DB level (not in memory) so an aged repo with many
+  // historical merged PRs doesn't trigger one GitHub API call per
+  // merged row. Cap at 50 in-flight rows per schedule pass to stay
+  // far below GitHub's secondary rate limit even on busy repos.
   const { data: rows, error } = await supa
     .from('pull_requests')
     .select('id, github_pr_number, state, merged')
-    .eq('repo_id', repoRow.id);
+    .eq('repo_id', repoRow.id)
+    .eq('merged', false)
+    .limit(50);
   if (error || !rows || rows.length === 0) return;
 
   let updated = 0;
   for (const row of rows) {
-    if (row.merged) continue; // terminal
     try {
       const { data: pr } = await client.rest.pulls.get({
         owner,
