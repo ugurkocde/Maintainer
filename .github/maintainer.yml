@@ -1,0 +1,29 @@
+# Maintainer config for the Maintainer repo itself.
+# Self-application: the platform maintains itself.
+
+triage:
+  enabled: true
+  auto_label: true
+  auto_dedupe: true
+
+fix:
+  enabled: true
+  # Only attempt fixes on the smallest, clearest bugs while we shake out
+  # the dogfood loop. Flip to true once a few rounds land cleanly.
+  auto_attempt: false
+  model: claude-sonnet-4-6
+
+review:
+  enabled: true
+  model: claude-sonnet-4-6
+  block_on_reject: true
+
+commands:
+  enabled: true
+  require_write_permission: true
+
+stale:
+  enabled: true
+  days_until_stale: 60
+  days_until_close: 14
+  exempt_labels: [pinned, security, enhancement, design]
