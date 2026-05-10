@@ -1,14 +1,26 @@
 import Link from 'next/link';
-import { listReposWithStats } from '@/lib/db';
-import { formatCost } from '@/lib/format';
+import {
+  getTotals,
+  listRecentActivity,
+  listReposWithStats,
+  type RepoStats,
+} from '@/lib/db';
+import { ActivityFeed } from '@/app/components/ActivityFeed';
+import { LiveTotals } from '@/app/components/LiveTotals';
+import { formatCost, formatRelativeTime } from '@/lib/format';
+import type { ActivityEntry } from '@/lib/use-realtime';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export default async function HomePage() {
-  let stats;
+  let totals, activity, repos;
   try {
-    stats = await listReposWithStats();
+    [totals, activity, repos] = await Promise.all([
+      getTotals(),
+      listRecentActivity(30),
+      listReposWithStats(),
+    ]);
   } catch (err) {
     return (
       <div className="rounded-lg border border-red-500/40 bg-red-500/5 p-6 text-red-200">
@@ -18,94 +30,171 @@ export default async function HomePage() {
     );
   }
 
-  if (stats.length === 0) {
-    return (
-      <div className="text-center py-20">
-        <h1 className="text-2xl font-semibold">No repositories yet</h1>
-        <p className="text-ink-400 mt-2 max-w-md mx-auto">
-          Install the Maintainer GitHub Action on a repository and pass the Supabase secrets so its
-          runs land here. The dashboard updates automatically.
+  const initialActivity: ActivityEntry[] = activity.map((r) => ({
+    run: {
+      ...r,
+      issue_id: r.issue?.id ?? null,
+      pr_id: r.pull_request?.id ?? null,
+      repo_id: r.repo_id,
+    } as ActivityEntry['run'],
+    issue: r.issue,
+    steps: r.agent_steps,
+    pull_request: r.pull_request,
+    repo: r.repo,
+  }));
+
+  return (
+    <div className="space-y-12">
+      <Hero />
+      <LiveTotals initial={totals} />
+
+      <section className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+        <div className="lg:col-span-3 space-y-3">
+          <SectionHeader title="Live activity" subtitle="Updates without refresh" live />
+          <ActivityFeed initial={initialActivity} />
+        </div>
+        <div className="lg:col-span-2 space-y-3" id="repos">
+          <SectionHeader title="Repositories" subtitle={`${repos.length} under management`} />
+          <RepoList repos={repos} />
+        </div>
+      </section>
+
+      <HowItWorks />
+    </div>
+  );
+}
+
+function Hero() {
+  return (
+    <section className="pt-6 pb-2">
+      <div className="max-w-3xl">
+        <p className="text-xs uppercase tracking-widest text-accent-500 mb-3">live</p>
+        <h1 className="text-4xl sm:text-5xl font-semibold tracking-tight leading-tight">
+          A fleet of AI agents keeping
+          <br />
+          open-source repositories healthy.
+        </h1>
+        <p className="mt-5 text-ink-300 text-lg max-w-2xl">
+          Maintainer triages new issues, drafts pull requests for scoped bugs,
+          and keeps an honest record of what was done. Watch every run as it
+          happens.
         </p>
-        <a
-          href="https://github.com/ugurkocde/Maintainer#quickstart"
-          className="mt-6 inline-block rounded-md bg-accent-500 px-4 py-2 text-sm font-medium hover:bg-accent-600"
-        >
-          Quickstart
-        </a>
+        <div className="mt-6 flex items-center gap-3">
+          <a
+            href="https://github.com/ugurkocde/Maintainer"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="rounded-md bg-accent-500 px-4 py-2 text-sm font-medium hover:bg-accent-600 transition"
+          >
+            Get the Action
+          </a>
+          <a
+            href="#how-it-works"
+            className="rounded-md border border-white/10 px-4 py-2 text-sm hover:border-white/20 transition"
+          >
+            How it works
+          </a>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SectionHeader({
+  title,
+  subtitle,
+  live,
+}: {
+  title: string;
+  subtitle?: string;
+  live?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between">
+      <h2 className="text-lg font-semibold flex items-center gap-2">
+        {title}
+        {live && (
+          <span className="inline-flex items-center gap-1 text-[11px] uppercase tracking-wider text-emerald-400">
+            <span className="pulse-dot inline-block h-1.5 w-1.5 rounded-full bg-emerald-400" />
+            live
+          </span>
+        )}
+      </h2>
+      {subtitle && <span className="text-xs text-ink-400">{subtitle}</span>}
+    </div>
+  );
+}
+
+function RepoList({ repos }: { repos: RepoStats[] }) {
+  if (repos.length === 0) {
+    return (
+      <div className="glass p-6 text-center">
+        <p className="text-ink-300">No repositories yet.</p>
+        <p className="text-sm text-ink-500 mt-1">
+          Install the Action and the first run lands here.
+        </p>
       </div>
     );
   }
-
-  const totals = stats.reduce(
-    (acc, s) => ({
-      runs: acc.runs + s.total_runs,
-      cost: acc.cost + s.total_cost_usd,
-      fixed: acc.fixed + s.fix_proposed,
-    }),
-    { runs: 0, cost: 0, fixed: 0 },
-  );
-
   return (
-    <div className="space-y-8">
-      <section>
-        <h1 className="text-2xl font-semibold">Repositories</h1>
-        <p className="text-ink-400 text-sm mt-1">
-          {stats.length} repo{stats.length === 1 ? '' : 's'} under Maintainer management
-          {' · '}
-          {totals.runs} run{totals.runs === 1 ? '' : 's'}
-          {' · '}
-          {totals.fixed} draft PR{totals.fixed === 1 ? '' : 's'}
-          {' · '}
-          {formatCost(totals.cost)} spent
-        </p>
-      </section>
-
-      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {stats.map((s) => (
+    <ul className="space-y-2">
+      {repos.map((s) => (
+        <li key={s.repo.id}>
           <Link
-            key={s.repo.id}
             href={`/repos/${s.repo.owner}/${s.repo.name}`}
-            className="group rounded-lg border border-ink-700/60 bg-ink-800/40 p-5 hover:border-ink-600 hover:bg-ink-800/70 transition"
+            className="group block glass hover:bg-white/[0.04] transition px-4 py-3"
           >
-            <div className="flex items-baseline justify-between">
-              <h2 className="font-medium tracking-tight group-hover:text-accent-500">
-                {s.repo.owner}
-                <span className="text-ink-500">/</span>
-                {s.repo.name}
-              </h2>
-              {s.repo.enabled ? (
-                <span className="text-emerald-400 text-xs">active</span>
-              ) : (
-                <span className="text-ink-500 text-xs">paused</span>
-              )}
+            <div className="flex items-baseline justify-between gap-3">
+              <div className="font-medium tracking-tight truncate">
+                {s.repo.owner}<span className="text-ink-500">/</span>{s.repo.name}
+              </div>
+              <span className="text-xs text-ink-500 shrink-0">
+                {s.last_run_at ? formatRelativeTime(s.last_run_at) : 'no runs'}
+              </span>
             </div>
-            <dl className="mt-4 grid grid-cols-3 gap-2 text-sm">
-              <div>
-                <dt className="text-ink-500 text-xs">Runs</dt>
-                <dd className="text-ink-100 font-medium tabular-nums">{s.total_runs}</dd>
-              </div>
-              <div>
-                <dt className="text-ink-500 text-xs">Open</dt>
-                <dd className="text-ink-100 font-medium tabular-nums">{s.open_issues}</dd>
-              </div>
-              <div>
-                <dt className="text-ink-500 text-xs">Drafted</dt>
-                <dd className="text-emerald-300 font-medium tabular-nums">{s.fix_proposed}</dd>
-              </div>
-              <div>
-                <dt className="text-ink-500 text-xs">Failed</dt>
-                <dd className="text-red-300 font-medium tabular-nums">{s.fix_failed}</dd>
-              </div>
-              <div className="col-span-2 text-right">
-                <dt className="text-ink-500 text-xs">Spent</dt>
-                <dd className="text-ink-200 font-medium tabular-nums">
-                  {formatCost(s.total_cost_usd)}
-                </dd>
-              </div>
+            <dl className="mt-2 flex items-center gap-4 text-xs text-ink-400 tabular-nums">
+              <span>{s.total_runs} runs</span>
+              <span>{s.fix_proposed} drafted</span>
+              <span>{s.open_issues} open</span>
+              <span className="ml-auto text-ink-300">{formatCost(s.total_cost_usd)}</span>
             </dl>
           </Link>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function HowItWorks() {
+  const steps = [
+    {
+      n: '01',
+      title: 'Triage on every new issue',
+      body: 'A small Sonnet agent classifies type, severity, scope, and reproducibility. Duplicates linked, labels applied, structured comment posted.',
+    },
+    {
+      n: '02',
+      title: 'Auto-attempt scoped bugs',
+      body: 'When the verdict is fixable, a code agent reads the repo, writes the smallest correct change, runs tests, and opens a draft pull request.',
+    },
+    {
+      n: '03',
+      title: 'Honest cost and time accounting',
+      body: 'Every run records token usage, cache reuse, model, runtime, and estimated cost. Maintainers decide what to merge and what to discard.',
+    },
+  ];
+  return (
+    <section id="how-it-works" className="space-y-4 pt-8">
+      <SectionHeader title="How it works" />
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {steps.map((s) => (
+          <div key={s.n} className="glass p-5">
+            <div className="text-xs text-accent-500 font-mono">{s.n}</div>
+            <div className="mt-2 font-medium">{s.title}</div>
+            <p className="mt-2 text-sm text-ink-400 leading-relaxed">{s.body}</p>
+          </div>
         ))}
-      </section>
-    </div>
+      </div>
+    </section>
   );
 }
