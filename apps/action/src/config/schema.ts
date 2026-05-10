@@ -26,6 +26,11 @@ export const ConfigSchema = z
       .object({
         enabled: z.boolean().default(true),
         require_write_permission: z.boolean().default(true),
+        // Strict allowlist of GitHub usernames. When non-empty, only these
+        // users can trigger commands; require_write_permission is bypassed
+        // because the allowlist is more specific. Comparison is
+        // case-insensitive.
+        allowed_users: z.array(z.string()).default([]),
         intent_model: z.string().default('claude-sonnet-4-6'),
       })
       .default({}),

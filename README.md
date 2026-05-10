@@ -105,7 +105,8 @@ fix:
 
 commands:
   enabled: true
-  require_write_permission: true
+  require_write_permission: true        # accepts any collaborator
+  allowed_users: [ugurkocde]            # strict allowlist; takes precedence when non-empty
   intent_model: claude-sonnet-4-6
 
 stale:

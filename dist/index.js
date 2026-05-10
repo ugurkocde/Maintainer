@@ -54828,7 +54828,18 @@ async function handleComment(args) {
     const parsed = (0, parse_js_1.parseCommand)(event.comment_body);
     if (parsed.kind === 'none')
         return;
-    if (config.commands.require_write_permission) {
+    // Allowlist takes precedence when set: only listed users can trigger.
+    // When not set, fall back to the looser write-access check.
+    const allowed = config.commands.allowed_users;
+    if (allowed.length > 0) {
+        const author = event.comment_author.toLowerCase();
+        const ok = allowed.some((u) => u.toLowerCase() === author);
+        if (!ok) {
+            log_js_1.log.info(`Ignoring command from @${event.comment_author}; not in allowed_users.`);
+            return;
+        }
+    }
+    else if (config.commands.require_write_permission) {
         const ok = await (0, issues_js_1.userHasWriteAccess)(client, event.comment_author);
         if (!ok) {
             log_js_1.log.info(`Ignoring command from non-collaborator @${event.comment_author}`);
@@ -55082,6 +55093,11 @@ exports.ConfigSchema = zod_1.z
         .object({
         enabled: zod_1.z.boolean().default(true),
         require_write_permission: zod_1.z.boolean().default(true),
+        // Strict allowlist of GitHub usernames. When non-empty, only these
+        // users can trigger commands; require_write_permission is bypassed
+        // because the allowlist is more specific. Comparison is
+        // case-insensitive.
+        allowed_users: zod_1.z.array(zod_1.z.string()).default([]),
         intent_model: zod_1.z.string().default('claude-sonnet-4-6'),
     })
         .default({}),

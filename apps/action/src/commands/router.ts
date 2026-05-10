@@ -31,7 +31,17 @@ export async function handleComment(args: {
   const parsed = parseCommand(event.comment_body);
   if (parsed.kind === 'none') return;
 
-  if (config.commands.require_write_permission) {
+  // Allowlist takes precedence when set: only listed users can trigger.
+  // When not set, fall back to the looser write-access check.
+  const allowed = config.commands.allowed_users;
+  if (allowed.length > 0) {
+    const author = event.comment_author.toLowerCase();
+    const ok = allowed.some((u) => u.toLowerCase() === author);
+    if (!ok) {
+      log.info(`Ignoring command from @${event.comment_author}; not in allowed_users.`);
+      return;
+    }
+  } else if (config.commands.require_write_permission) {
     const ok = await userHasWriteAccess(client, event.comment_author);
     if (!ok) {
       log.info(`Ignoring command from non-collaborator @${event.comment_author}`);
