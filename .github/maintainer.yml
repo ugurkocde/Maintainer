@@ -11,7 +11,10 @@ fix:
   # Only attempt fixes on the smallest, clearest bugs while we shake out
   # the dogfood loop. Flip to true once a few rounds land cleanly.
   auto_attempt: false
-  model: claude-sonnet-4-6
+  # Opus on this monorepo because Sonnet was getting stuck navigating
+  # apps/ vs packages/ vs supabase/ without ever writing the fix.
+  # Worth the higher per-run cost for a low-volume self-maintenance repo.
+  model: claude-opus-4-7
 
 review:
   enabled: true
